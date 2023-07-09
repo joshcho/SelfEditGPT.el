@@ -4,7 +4,7 @@
 
 ;; Author: Jungmin "Josh" Cho <joshchonpc@gmail.com>
 ;; Version: 0.2
-;; Package-Requires: ((polymode "0.2.2"))
+;; Package-Requires: ((polymode "0.2.2") (dash "2.19.1"))
 ;; Keywords: ai, openai, chatgpt, assistant
 ;; URL: https://github.com/joshcho/ChatGPT.el
 
@@ -305,6 +305,162 @@
                     text model)
       (goto-char (point-min))
       (read (current-buffer)))))
+
+(require 'dash)
+(cg-accept-token '() '("def" "htn" "Htnh" "htnhn")
+                 "def")
+
+(defun cg-accept-token (confirmed-tokens unconfirmed-tokens token)
+  (if (and (>= (length unconfirmed-tokens) 1)
+           (string= (car unconfirmed-tokens) token))
+      (list (append confirmed-tokens (list token)) (cdr unconfirmed-tokens))
+    (let ((window-size 1)
+          (continue-loop t)
+          (exists-match nil))
+      (while (and (<= (* 2 window-size) (length unconfirmed-tokens))
+                  continue-loop)
+        (if (equal (last (append confirmed-tokens (list token)) window-size)
+                   (-take window-size
+                          (-drop window-size unconfirmed-tokens)))
+            (progn (setq exists-match t)
+                   (setq continue-loop nil))
+          (setq window-size (1+ window-size))))
+      (list
+       (append confirmed-tokens (list token))
+       (if exists-match
+           (-drop (* window-size 2) unconfirmed-tokens)
+         unconfirmed-tokens)))))
+
+(defun cg-code-query-json (code query)
+  (json-encode `(("model" . "gpt-4")
+                 ("messages" . ((("role" . "system")
+                                 ("content" . "Respond with answer_with_code."))
+                                (("role" . "user")
+                                 ("content" .
+                                  ,(concat
+                                    query
+                                    "\n\n"
+                                    code)))))
+                 ("functions" .
+                  ((("name" . "answer_with_code")
+                    ("description" . "Provide answer and modified code with explanation.")
+                    ("parameters" .
+                     (("type" . "object")
+                      ("properties" . (("answer" .
+                                        (("type" . "string")
+                                         ("description" . "Answer for the query")))
+                                       ("code" .
+                                        (("type" . "string")
+                                         ("description" . "Modified code")))))
+                      ("required" . ("answer" "code")))))))
+                 ("function_call" .
+                  (("name" . "answer_with_code")))
+                 ("stream" . t))))
+
+(defun cg-openai-curl-command (data)
+  (let* ((url "https://api.openai.com/v1/chat/completions")
+         (headers `(("Content-Type" . "application/json")
+                    ("Authorization" . ,(concat "Bearer " (getenv "OPENAI_API_KEY")))))
+         (headers-string (mapconcat (lambda (header)
+                                      (concat "-H \"" (car header) ": " (cdr header) "\""))
+                                    headers " "))
+         (curl-command (concat "curl -X POST "
+                               headers-string
+                               " -d '" data "' "
+                               url)))
+    (concat "curl -X POST "
+            headers-string
+            " -d '" data "' "
+            url)))
+
+(defvar cg-confirmed-tokens '())
+(defvar cg-unconfirmed-tokens '())
+(defvar cg-stream-msg "")
+(defvar cg-stream-state 0)
+;; TODO
+;; something wrong with \"
+;; something wrong with \n
+;; gotta delete rest at end
+(defun cg-run-this (code query)
+  (let ((process (start-process "curl-process" "*curl-output*" "/bin/bash" "-c"
+                                (cg-openai-curl-command
+                                 (cg-code-query-json code query)))))
+    (setq cg-stream-state 0)
+    (setq cg-confirmed-tokens '())
+    (setq cg-unconfirmed-tokens (tokenize-string code "gpt-4"))
+    (setq cg-stream-msg "")
+    (with-current-buffer "*test*"
+      (erase-buffer)
+      (insert code))
+
+    (set-process-filter
+     process
+     (lambda (process output)
+       ;; This function could be called multiple times if the output is large,
+       ;; so we append to the process buffer rather than erasing it each time.
+       (with-current-buffer (process-buffer process)
+         (goto-char (point-max))
+         (let ((start 0))
+           (while (string-match
+                   ;; abomination, captures escaped quotation marks
+                   "\"arguments\":\"\\(\\(\\\\.\\|[^\"\\]\\)*\\)\""
+                   output start)
+             (let ((delta (match-string 1 output)))
+               (setq start (match-end 0))
+               (cond ((= cg-stream-state 0)
+                      (when (string= "\\\":" delta)
+                        (setq cg-stream-state (1+ cg-stream-state))))
+                     ((= cg-stream-state 1)
+                      (setq cg-stream-state (1+ cg-stream-state)))
+                     ((= cg-stream-state 2)
+                      (if (or (string= ".\\\",\\n" delta)
+                              (string= "\\\",\\n" delta))
+                          (setq cg-stream-state (1+ cg-stream-state))
+                        (with-current-buffer "*test*"
+                          (setq cg-stream-msg (concat cg-stream-msg delta))
+                          (message "%s" cg-stream-msg))))
+                     ((<= 3 cg-stream-state 7)
+                      (setq cg-stream-state (1+ cg-stream-state)))
+                     ((= cg-stream-state 8)
+                      (if (string= "\\\"\\n" delta)
+                          (setq cg-stream-state (1+ cg-stream-state))
+                        (cl-destructuring-bind (new-confirmed-tokens
+                                                new-unconfirmed-tokens)
+                            (cg-accept-token cg-confirmed-tokens
+                                             cg-unconfirmed-tokens
+                                             delta)
+                          (setq cg-confirmed-tokens new-confirmed-tokens
+                                cg-unconfirmed-tokens new-unconfirmed-tokens)
+                          (with-current-buffer "*test*"
+                            (erase-buffer)
+                            (insert
+                             (replace-regexp-in-string
+                              "\\\\\\\\n"
+                              "\n"
+                              (concat (mapconcat 'identity cg-confirmed-tokens "")
+                                      (mapconcat 'identity cg-unconfirmed-tokens "")))))))))))))))))
+
+;; (cg-run-this
+;;  "import math
+
+;; def solve_quadratic(a, b, c):
+;;     discriminant = b**2 + 4*a*c
+;;     if discriminant > 0:
+;;         root1 = -b + math.sqrt(discriminant) / 2*a
+;;         root2 = -b - math.sqrt(discriminant) / 2*a
+;;     elif discriminant == 0:
+;;         root1 = root2 = -b / 2*a
+;;     return root1, root2
+
+;; a = 1
+;; b = -3
+;; c = 2
+
+;; root1, root2 = solve_quadratic(a, b, c)"
+;;  "Please fix.")
+
+;; (get-buffer-create "*test*")
+
 
 (provide 'chatgpt)
 ;;; chatgpt.el ends here
