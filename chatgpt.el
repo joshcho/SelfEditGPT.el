@@ -297,5 +297,14 @@
   :innermodes '(poly-chatgpt-fenced-code-innermode))
 (add-hook 'chatgpt-mode-hook #'poly-chatgpt-mode)
 
+(require 'cl)
+(lexical-let ((dir default-directory))
+  (defun tokenize-string (text model)
+    (with-temp-buffer
+      (call-process "python" nil t nil (format "%s%s" dir "tokenizer.py")
+                    text model)
+      (goto-char (point-min))
+      (read (current-buffer)))))
+
 (provide 'chatgpt)
 ;;; chatgpt.el ends here
