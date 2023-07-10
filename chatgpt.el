@@ -307,8 +307,6 @@
       (read (current-buffer)))))
 
 (require 'dash)
-(cg-accept-token '() '("def" "htn" "Htnh" "htnhn")
-                 "def")
 
 (defun cg-accept-token (confirmed-tokens unconfirmed-tokens token)
   (if (and (>= (length unconfirmed-tokens) 1)
@@ -389,9 +387,11 @@
     (setq cg-confirmed-tokens '())
     (setq cg-unconfirmed-tokens (tokenize-string code "gpt-4"))
     (setq cg-stream-msg "")
-    (with-current-buffer "*test*"
+    (with-current-buffer (get-buffer-create "*test*")
       (erase-buffer)
       (insert code))
+    (with-current-buffer (get-buffer-create "*deltas*")
+      (erase-buffer))
 
     (set-process-filter
      process
@@ -406,24 +406,44 @@
                    "\"arguments\":\"\\(\\(\\\\.\\|[^\"\\]\\)*\\)\""
                    output start)
              (let ((delta (match-string 1 output)))
+               (with-current-buffer "*deltas*"
+                 (insert (format "\"%s\", " delta)))
                (setq start (match-end 0))
                (cond ((= cg-stream-state 0)
                       (when (string= "\\\":" delta)
-                        (setq cg-stream-state (1+ cg-stream-state))))
+                        (cg-transition)))
                      ((= cg-stream-state 1)
-                      (setq cg-stream-state (1+ cg-stream-state)))
+                      (cg-transition))
                      ((= cg-stream-state 2)
                       (if (or (string= ".\\\",\\n" delta)
-                              (string= "\\\",\\n" delta))
-                          (setq cg-stream-state (1+ cg-stream-state))
+                              (string= "\\\",\\n" delta)
+                              (string= "\\\"" delta))
+                          (cg-transition)
                         (with-current-buffer "*test*"
                           (setq cg-stream-msg (concat cg-stream-msg delta))
                           (message "%s" cg-stream-msg))))
-                     ((<= 3 cg-stream-state 7)
-                      (setq cg-stream-state (1+ cg-stream-state)))
-                     ((= cg-stream-state 8)
-                      (if (string= "\\\"\\n" delta)
-                          (setq cg-stream-state (1+ cg-stream-state))
+                     ((= cg-stream-state 3)
+                      (when (or (string= " \\\"" delta)
+                                (string= "\\\"" delta))
+                        (cg-transition)))
+                     ((< cg-stream-state 7)
+                      (cg-transition))
+                     ((= cg-stream-state 7)
+                      (if (string-match "\\([^\\]?\\)\\\\\"\\(\\\\n\\)?" delta)
+                          (progn
+                            (cg-transition)
+                            (when (not (equal (match-string 1 delta) ""))
+                              (with-current-buffer "*test*"
+                                (erase-buffer)
+                                (insert
+                                 (replace-regexp-in-string
+                                  "\\\\\\n"
+                                  "\n"
+                                  (replace-regexp-in-string
+                                   "\\\\\\\\\\n"
+                                   "\n"
+                                   (concat (mapconcat 'identity cg-confirmed-tokens "")
+                                           (match-string 1 delta))))))))
                         (cl-destructuring-bind (new-confirmed-tokens
                                                 new-unconfirmed-tokens)
                             (cg-accept-token cg-confirmed-tokens
@@ -435,29 +455,39 @@
                             (erase-buffer)
                             (insert
                              (replace-regexp-in-string
-                              "\\\\\\\\n"
+                              "\\\\\\n"
                               "\n"
-                              (concat (mapconcat 'identity cg-confirmed-tokens "")
-                                      (mapconcat 'identity cg-unconfirmed-tokens "")))))))))))))))))
+                              (replace-regexp-in-string
+                               "\\\\\\\\\\n"
+                               "\n"
+                               (concat (mapconcat 'identity cg-confirmed-tokens "")
+                                       (mapconcat 'identity cg-unconfirmed-tokens ""))))))))))))))))))
+
+(defun cg-transition ()
+  (setq cg-stream-state (1+ cg-stream-state))
+  (with-current-buffer "*deltas*"
+    (goto-char (point-max))
+    (insert (format "\n\n%d\n" cg-stream-state))))
 
 ;; (cg-run-this
 ;;  "import math
 
 ;; def solve_quadratic(a, b, c):
-;;     discriminant = b**2 + 4*a*c
+;;     discriminant = b**2 - 4*a*c
 ;;     if discriminant > 0:
-;;         root1 = -b + math.sqrt(discriminant) / 2*a
-;;         root2 = -b - math.sqrt(discriminant) / 2*a
+;;         root1 = (-b + math.sqrt(discriminant)) / (2*a)
+;;         root2 = (-b - math.sqrt(discriminant)) / (2*a)
 ;;     elif discriminant == 0:
-;;         root1 = root2 = -b / 2*a
+;;         root1 = root2 = -b / (2*a)
 ;;     return root1, root2
 
 ;; a = 1
 ;; b = -3
 ;; c = 2
 
-;; root1, root2 = solve_quadratic(a, b, c)"
-;;  "Please fix.")
+;; root1, root2 = solve_quadratic(a, b, c)
+;; print(root1, root2)"
+;;  "Use x,y,z instead.")
 
 ;; (get-buffer-create "*test*")
 
