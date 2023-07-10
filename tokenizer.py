@@ -7,6 +7,7 @@ def tokenize(text, model):
 
     # Convert bytes to string
     tokens = [token_byte.decode('utf-8') for token_byte in tokens_bytes]
+    tokens = [token.replace('"', '\\"') for token in tokens]
 
     # Convert Python list to Emacs Lisp list format
     emacs_list_format = '(' + ' '.join(f'"{token}"' for token in tokens) + ')'

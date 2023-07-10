@@ -150,6 +150,7 @@
   '(("bug" . "There is a bug in the following, please help me fix it.")
     ("doc" . "Please write the documentation for the following.")
     ("improve" . "Please improve the following.")
+    ("fix" . "Please fix.")
     ("understand" . "What is the following?")
     ("refactor" . "Please refactor the following.")
     ("suggest" . "Please make suggestions for the following."))
@@ -309,6 +310,8 @@
 (require 'dash)
 
 (defun cg-accept-token (confirmed-tokens unconfirmed-tokens token)
+  (assert (-every #'stringp confirmed-tokens))
+  (assert (-every #'stringp unconfirmed-tokens))
   (if (and (>= (length unconfirmed-tokens) 1)
            (string= (car unconfirmed-tokens) token))
       (list (append confirmed-tokens (list token)) (cdr unconfirmed-tokens))
@@ -346,7 +349,7 @@
                      (("type" . "object")
                       ("properties" . (("answer" .
                                         (("type" . "string")
-                                         ("description" . "Answer for the query")))
+                                         ("description" . "Answer for the query. Return in progressive form, with -ing")))
                                        ("code" .
                                         (("type" . "string")
                                          ("description" . "Modified code (just the code)")))))
@@ -377,6 +380,18 @@
 (defvar cg-stream-state 0)
 (defvar cg-stream-collected "")
 
+(defun cg-sanitize (string)
+  (replace-regexp-in-string
+   "\\\\\\\\\\\\\\\""
+   "\""
+   (replace-regexp-in-string
+    "\\\\\\n"
+    "\n"
+    (replace-regexp-in-string
+     "\\\\\\\\\\n"
+     "\n"
+     string))))
+
 (defun cg-run-this (code query)
   (let ((process (start-process "curl-process" "*curl-output*" "/bin/bash" "-c"
                                 (cg-openai-curl-command
@@ -399,6 +414,8 @@
        ;; so we append to the process buffer rather than erasing it each time.
        (with-current-buffer (process-buffer process)
          (goto-char (point-max))
+         (with-current-buffer "*deltas*"
+           (insert (format "\"%s\"\n" output)))
          (let ((start 0))
            (while (string-match
                    ;; abomination, captures escaped quotation marks
@@ -408,54 +425,50 @@
                (with-current-buffer "*deltas*"
                  (insert (format "\"%s\", " delta)))
                (setq start (match-end 0))
+               (setq cg-stream-collected (concat cg-stream-collected delta))
                (cond ((= cg-stream-state 0)
-                      (setq cg-stream-collected (concat cg-stream-collected delta))
                       (with-current-buffer "*deltas*"
                         (insert (format "\"%s\"\n" cg-stream-collected)))
                       (when (string-match
                              "^{\\(?:\\s-\\|\\\\n\\)*\\\\\"answer\\\\\":\\(?:\\s-\\|\\\\n\\)*\\\\\"\\(.*\\)"
                              cg-stream-collected)
                         (setq cg-stream-msg (match-string 1 cg-stream-collected))
-                        (message "%s" cg-stream-msg)
+                        (message "%s" (cg-sanitize cg-stream-msg))
                         (cg-transition)
                         (setq cg-stream-collected "")))
                      ((= cg-stream-state 1)
-                      (setq cg-stream-collected (concat cg-stream-collected delta))
                       (if (string-match "\\(.*[^\\\\]\\)\\\\\"\\(.*\\)" cg-stream-collected)
                           (progn
-                            (message "%s" (match-string 1 cg-stream-collected))
+                            (message "%s" (cg-sanitize (match-string 1 cg-stream-collected)))
                             (setq cg-stream-collected (match-string 2 cg-stream-collected))
                             (cg-transition))
                         (progn
                           (setq cg-stream-msg (concat cg-stream-msg delta))
-                          (message "%s" cg-stream-msg))))
+                          (message "%s" (cg-sanitize cg-stream-msg)))))
                      ((= cg-stream-state 2)
-                      (setq cg-stream-collected (concat cg-stream-collected delta))
                       (with-current-buffer "*deltas*"
                         (insert (format "\"%s\"\n" cg-stream-collected)))
                       (when (string-match "\\\\\"code\\\\\":\\(?:\\s-\\|\\\\n\\)*\\\\\"\\(.*\\)" cg-stream-collected)
                         (setq cg-confirmed-tokens (list
                                                    (match-string 1 cg-stream-collected)))
+                        (setq cg-stream-collected "")
                         (cg-transition)))
                      ((= cg-stream-state 3)
-                      (if (string-match "\\([^\\]?\\)\\\\\"\\(\\\\n\\)?" delta)
+                      (if (string-match "\\([^\\]\\|^\\)\\\\\\\"" cg-stream-collected)
                           (progn
                             (cg-transition)
-                            (with-current-buffer "*deltas*"
-                              (insert (format "\"%s\"\n" delta))
-                              (insert (format "\"%s\"\n" (match-string 1 delta))))
-                            (cg-transition)
+                            ;; (with-current-buffer "*deltas*"
+                            ;;   (insert (format "\"%s\"\n" delta))
+                            ;;   (insert (format "\"%s\"\n" (match-string 1 delta))))
                             (with-current-buffer "*test*"
                               (erase-buffer)
                               (insert
-                               (replace-regexp-in-string
-                                "\\\\\\n"
-                                "\n"
-                                (replace-regexp-in-string
-                                 "\\\\\\\\\\n"
-                                 "\n"
-                                 (concat (mapconcat 'identity cg-confirmed-tokens "")
-                                         (match-string 1 delta)))))))
+                               (cg-sanitize
+                                (concat (mapconcat 'identity cg-confirmed-tokens "")
+                                        (if (string-match "\\(.*\\([^\\]\\|^\\)\\)\\\\\\\""
+                                                          delta)
+                                            (match-string 1 delta)
+                                          ""))))))
                         (cl-destructuring-bind (new-confirmed-tokens
                                                 new-unconfirmed-tokens)
                             (cg-accept-token cg-confirmed-tokens
@@ -466,14 +479,9 @@
                           (with-current-buffer "*test*"
                             (erase-buffer)
                             (insert
-                             (replace-regexp-in-string
-                              "\\\\\\n"
-                              "\n"
-                              (replace-regexp-in-string
-                               "\\\\\\\\\\n"
-                               "\n"
-                               (concat (mapconcat 'identity cg-confirmed-tokens "")
-                                       (mapconcat 'identity cg-unconfirmed-tokens ""))))))))))))))))))
+                             (cg-sanitize
+                              (concat (mapconcat 'identity cg-confirmed-tokens "")
+                                      (mapconcat 'identity cg-unconfirmed-tokens "")))))))))))))))))
 
 (defun cg-transition ()
   (setq cg-stream-state (1+ cg-stream-state))
@@ -482,12 +490,28 @@
     (insert (format "\n\n%d\n" cg-stream-state))))
 
 ;; (cg-run-this
-;;  "def flatten(list_of_lists):
-;;     flat_list = []
-;;     for sublist in list_of_lists:
-;;         flat_list.extend(sublist)
-;;     return flat_list"
-;;  "i want this to actually flatten a list of dictionaries instead.")
+;;  "def flatten(list_of_dicts):
+;;     flat_dict = {}
+;;     for dict_ in list_of_dicts:
+;;         flat_dict.update(dict_)
+;;     return flat_dict"
+;;  "Please improve this.")
+
+;; need to properly escape things, look for the general solution
+(defun chatgpt-self-edit (code query)
+  (interactive
+   (list (if (region-active-p)
+             (buffer-substring-no-properties (region-beginning) (region-end))
+           "")
+         (let ((query-type (completing-read "Type of Query: "
+                                            (cons "custom"
+                                                  (mapcar #'car chatgpt-code-query-map)))))
+           (cond ((assoc query-type chatgpt-code-query-map)
+                  (cdr (assoc query-type chatgpt-code-query-map)))
+                 ((equal query-type "custom")
+                  (read-from-minibuffer "ChatGPT Custom Prompt: "))
+                 (t query-type)))))
+  (cg-run-this code query))
 
 ;; (get-buffer-create "*test*")
 
