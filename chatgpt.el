@@ -349,7 +349,7 @@
                                          ("description" . "Answer for the query")))
                                        ("code" .
                                         (("type" . "string")
-                                         ("description" . "Modified code")))))
+                                         ("description" . "Modified code (just the code)")))))
                       ("required" . ("answer" "code")))))))
                  ("function_call" .
                   (("name" . "answer_with_code")))
@@ -375,10 +375,8 @@
 (defvar cg-unconfirmed-tokens '())
 (defvar cg-stream-msg "")
 (defvar cg-stream-state 0)
-;; TODO
-;; something wrong with \"
-;; something wrong with \n
-;; gotta delete rest at end
+(defvar cg-stream-collected "")
+
 (defun cg-run-this (code query)
   (let ((process (start-process "curl-process" "*curl-output*" "/bin/bash" "-c"
                                 (cg-openai-curl-command
@@ -387,6 +385,7 @@
     (setq cg-confirmed-tokens '())
     (setq cg-unconfirmed-tokens (tokenize-string code "gpt-4"))
     (setq cg-stream-msg "")
+    (setq cg-stream-collected "")
     (with-current-buffer (get-buffer-create "*test*")
       (erase-buffer)
       (insert code))
@@ -410,40 +409,53 @@
                  (insert (format "\"%s\", " delta)))
                (setq start (match-end 0))
                (cond ((= cg-stream-state 0)
-                      (when (string= "\\\":" delta)
-                        (cg-transition)))
+                      (setq cg-stream-collected (concat cg-stream-collected delta))
+                      (with-current-buffer "*deltas*"
+                        (insert (format "\"%s\"\n" cg-stream-collected)))
+                      (when (string-match
+                             "^{\\(?:\\s-\\|\\\\n\\)*\\\\\"answer\\\\\":\\(?:\\s-\\|\\\\n\\)*\\\\\"\\(.*\\)"
+                             cg-stream-collected)
+                        (setq cg-stream-msg (match-string 1 cg-stream-collected))
+                        (message "%s" cg-stream-msg)
+                        (cg-transition)
+                        (setq cg-stream-collected "")))
                      ((= cg-stream-state 1)
-                      (cg-transition))
-                     ((= cg-stream-state 2)
-                      (if (or (string= ".\\\",\\n" delta)
-                              (string= "\\\",\\n" delta)
-                              (string= "\\\"" delta))
-                          (cg-transition)
-                        (with-current-buffer "*test*"
+                      (setq cg-stream-collected (concat cg-stream-collected delta))
+                      (if (string-match "\\(.*[^\\\\]\\)\\\\\"\\(.*\\)" cg-stream-collected)
+                          (progn
+                            (message "%s" (match-string 1 cg-stream-collected))
+                            (setq cg-stream-collected (match-string 2 cg-stream-collected))
+                            (cg-transition))
+                        (progn
                           (setq cg-stream-msg (concat cg-stream-msg delta))
                           (message "%s" cg-stream-msg))))
-                     ((= cg-stream-state 3)
-                      (when (or (string= " \\\"" delta)
-                                (string= "\\\"" delta))
+                     ((= cg-stream-state 2)
+                      (setq cg-stream-collected (concat cg-stream-collected delta))
+                      (with-current-buffer "*deltas*"
+                        (insert (format "\"%s\"\n" cg-stream-collected)))
+                      (when (string-match "\\\\\"code\\\\\":\\(?:\\s-\\|\\\\n\\)*\\\\\"\\(.*\\)" cg-stream-collected)
+                        (setq cg-confirmed-tokens (list
+                                                   (match-string 1 cg-stream-collected)))
                         (cg-transition)))
-                     ((< cg-stream-state 7)
-                      (cg-transition))
-                     ((= cg-stream-state 7)
+                     ((= cg-stream-state 3)
                       (if (string-match "\\([^\\]?\\)\\\\\"\\(\\\\n\\)?" delta)
                           (progn
                             (cg-transition)
-                            (when (not (equal (match-string 1 delta) ""))
-                              (with-current-buffer "*test*"
-                                (erase-buffer)
-                                (insert
-                                 (replace-regexp-in-string
-                                  "\\\\\\n"
-                                  "\n"
-                                  (replace-regexp-in-string
-                                   "\\\\\\\\\\n"
-                                   "\n"
-                                   (concat (mapconcat 'identity cg-confirmed-tokens "")
-                                           (match-string 1 delta))))))))
+                            (with-current-buffer "*deltas*"
+                              (insert (format "\"%s\"\n" delta))
+                              (insert (format "\"%s\"\n" (match-string 1 delta))))
+                            (cg-transition)
+                            (with-current-buffer "*test*"
+                              (erase-buffer)
+                              (insert
+                               (replace-regexp-in-string
+                                "\\\\\\n"
+                                "\n"
+                                (replace-regexp-in-string
+                                 "\\\\\\\\\\n"
+                                 "\n"
+                                 (concat (mapconcat 'identity cg-confirmed-tokens "")
+                                         (match-string 1 delta)))))))
                         (cl-destructuring-bind (new-confirmed-tokens
                                                 new-unconfirmed-tokens)
                             (cg-accept-token cg-confirmed-tokens
@@ -470,24 +482,12 @@
     (insert (format "\n\n%d\n" cg-stream-state))))
 
 ;; (cg-run-this
-;;  "import math
-
-;; def solve_quadratic(a, b, c):
-;;     discriminant = b**2 - 4*a*c
-;;     if discriminant > 0:
-;;         root1 = (-b + math.sqrt(discriminant)) / (2*a)
-;;         root2 = (-b - math.sqrt(discriminant)) / (2*a)
-;;     elif discriminant == 0:
-;;         root1 = root2 = -b / (2*a)
-;;     return root1, root2
-
-;; a = 1
-;; b = -3
-;; c = 2
-
-;; root1, root2 = solve_quadratic(a, b, c)
-;; print(root1, root2)"
-;;  "Use x,y,z instead.")
+;;  "def flatten(list_of_lists):
+;;     flat_list = []
+;;     for sublist in list_of_lists:
+;;         flat_list.extend(sublist)
+;;     return flat_list"
+;;  "i want this to actually flatten a list of dictionaries instead.")
 
 ;; (get-buffer-create "*test*")
 
