@@ -12,6 +12,12 @@
 * Docs
 - Add something about hooks that might cause errors
 
+* self-edit
+- Make variables per-process
+  there should be emacs thing to attach variables to object
+- Handle curl escaped strings
+- Handle other languages
+
 * Later
 - [[https://github.com/nobiot/org-transclusion][Org Transclusion]]?
 - Easy chat selection

@@ -247,6 +247,7 @@
   (interactive)
   (save-window-excursion
     (chatgpt-run))
+  ;; (cg-query (read-from-minibuffer "ChatGPT Query: "))
   (if (region-active-p)
       (chatgpt-code-query
        (buffer-substring-no-properties (region-beginning) (region-end)))
@@ -393,7 +394,127 @@
      "\n"
      string))))
 
-(defun cg-run-this (code query)
+(defun cg-make-stream-filter (display-buffer uuid)
+  (lexical-let ((display-buffer display-buffer)
+                (uuid uuid))
+    (lambda (process output)
+      (with-current-buffer (process-buffer process)
+        (goto-char (point-max))
+        ;; catching errors, doesn't work i think
+        ;; (when (string-match "^data: {\"error\":{\"message\":\"\\([^\"]*\\)\""
+        ;;                     output)
+        ;;   (message (match-string 1 output)))
+
+        ;; severe debugging
+        (with-current-buffer (get-buffer-create "*outputs*")
+          (insert (format "\"%s\"\n" output)))
+        (let ((start 0))
+          (while (string-match
+                  ;; abomination, captures escaped quotation marks
+                  "\"arguments\":\"\\(\\(\\\\.\\|[^\"\\]\\)*\\)\""
+                  output start)
+            (let ((delta (match-string 1 output)))
+              (with-current-buffer "*deltas*"
+                (insert (format "\"%s\", " delta)))
+              (setq start (match-end 0))
+              (setq cg-stream-collected (concat cg-stream-collected delta))
+              (cond ((= cg-stream-state 0)
+                     ;; (with-current-buffer "*deltas*"
+                     ;;   (insert (format "\"%s\"\n" cg-stream-collected)))
+                     (when (string-match
+                            (rx (and
+                                 line-start "{"
+                                 (zero-or-more (or whitespace "\\n"))
+                                 "\\\"answer\\\":"
+                                 (zero-or-more (or whitespace "\\n"))
+                                 "\\\""
+                                 (group (zero-or-more not-newline))))
+                            cg-stream-collected)
+                       (setq cg-stream-msg (match-string 1 cg-stream-collected))
+                       (message "%s" (cg-sanitize cg-stream-msg))
+                       (cg-transition)
+                       (setq cg-stream-collected "")))
+                    ((= cg-stream-state 1)
+                     (if (string-match
+                          "\\(.*[^\\\\]\\)\\\\\"\\(.*\\)" cg-stream-collected)
+                         (progn
+                           (message "%s" (cg-sanitize (match-string 1 cg-stream-collected)))
+                           (setq cg-stream-collected (match-string 2 cg-stream-collected))
+                           (cg-transition))
+                       (progn
+                         (setq cg-stream-msg (concat cg-stream-msg delta))
+                         (message "%s" (cg-sanitize cg-stream-msg)))))
+                    ((= cg-stream-state 2)
+                     ;; (with-current-buffer "*deltas*"
+                     ;;   (insert (format "\"%s\"\n" cg-stream-collected)))
+                     (when (string-match
+                            (rx (and
+                                 "\\\"code\\\":"
+                                 (zero-or-more (or whitespace "\\n"))
+                                 "\\\""
+                                 (group (zero-or-more not-newline))))
+                            cg-stream-collected)
+                       (setq cg-confirmed-tokens (list
+                                                  (match-string 1 cg-stream-collected)))
+                       (setq cg-stream-collected "")
+                       (cg-transition)))
+                    ((= cg-stream-state 3)
+                     (if (string-match ;; "\\([^\\]\\|^\\)\\\\\\\""
+                          (rx
+                           (and
+                            "\\\""
+                            (zero-or-more (or whitespace "\\n"))
+                            "}"))
+                          ;; "\\\"\\n}"
+                          cg-stream-collected)
+                         (let ((final-string
+                                (concat (apply #'concat cg-confirmed-tokens)
+                                        delta)))
+                           (cg-transition)
+                           (cg-replace-block display-buffer
+                                             uuid
+                                             (cg-sanitize
+                                              (substring
+                                               final-string
+                                               0
+                                               (- (length final-string)
+                                                  (length (match-string 0 cg-stream-collected))))))
+                           ;; (with-current-buffer "*test*"
+                           ;;   (erase-buffer)
+                           ;;   (insert
+                           ;;    (cg-sanitize
+                           ;;     (concat (mapconcat 'identity cg-confirmed-tokens "")
+                           ;;             (if (string-match "\\(.*\\([^\\]\\|^\\)\\)\\\\\\\""
+                           ;;                               delta)
+                           ;;                 (match-string 1 delta)
+                           ;;               "")))))
+                           )
+                       (cl-destructuring-bind (new-confirmed-tokens
+                                               new-unconfirmed-tokens)
+                           (cg-accept-token cg-confirmed-tokens
+                                            cg-unconfirmed-tokens
+                                            delta)
+                         (setq cg-confirmed-tokens new-confirmed-tokens
+                               cg-unconfirmed-tokens new-unconfirmed-tokens)
+                         ;; trick to not display partial \
+                         (unless (equal (substring
+                                         (mapconcat 'identity cg-confirmed-tokens "")
+                                         -1)
+                                        "\\")
+                           (cg-replace-block display-buffer
+                                             uuid
+                                             (cg-sanitize
+                                              (concat (mapconcat 'identity cg-confirmed-tokens "")
+                                                      (mapconcat 'identity cg-unconfirmed-tokens ""))))
+                           ;; (with-current-buffer "*test*"
+                           ;;   (erase-buffer)
+                           ;;   (insert
+                           ;;    (cg-sanitize
+                           ;;     (concat (mapconcat 'identity cg-confirmed-tokens "")
+                           ;;             (mapconcat 'identity cg-unconfirmed-tokens "")))))
+                           ))))))))))))
+
+(defun cg-run-this (code query display-buffer uuid)
   (let ((process (start-process "curl-process" "*curl-output*" "/bin/bash" "-c"
                                 (cg-openai-curl-command
                                  (cg-code-query-json code query)))))
@@ -407,101 +528,9 @@
       (insert code))
     (with-current-buffer (get-buffer-create "*deltas*")
       (erase-buffer))
-
     (set-process-filter
      process
-     (lambda (process output)
-       ;; This function could be called multiple times if the output is large,
-       ;; so we append to the process buffer rather than erasing it each time.
-       (with-current-buffer (process-buffer process)
-         (goto-char (point-max))
-         ;; (with-current-buffer "*deltas*"
-         ;;   (insert (format "\"%s\"\n" output)))
-         (let ((start 0))
-           (while (string-match
-                   ;; abomination, captures escaped quotation marks
-                   "\"arguments\":\"\\(\\(\\\\.\\|[^\"\\]\\)*\\)\""
-                   output start)
-             (let ((delta (match-string 1 output)))
-               (with-current-buffer "*deltas*"
-                 (insert (format "\"%s\", " delta)))
-               (setq start (match-end 0))
-               (setq cg-stream-collected (concat cg-stream-collected delta))
-               (cond ((= cg-stream-state 0)
-                      ;; (with-current-buffer "*deltas*"
-                      ;;   (insert (format "\"%s\"\n" cg-stream-collected)))
-                      (when (string-match
-                             (rx (and
-                                  line-start "{"
-                                  (zero-or-more (or whitespace "\\n"))
-
-                                  "\\\"answer\\\":"
-                                  (zero-or-more (or whitespace "\\n"))
-                                  "\\\""
-                                  (group (zero-or-more not-newline))))
-                             cg-stream-collected)
-                        (setq cg-stream-msg (match-string 1 cg-stream-collected))
-                        (message "%s" (cg-sanitize cg-stream-msg))
-                        (cg-transition)
-                        (setq cg-stream-collected "")))
-                     ((= cg-stream-state 1)
-                      (if (string-match
-                           "\\(.*[^\\\\]\\)\\\\\"\\(.*\\)" cg-stream-collected)
-                          (progn
-                            (message "%s" (cg-sanitize (match-string 1 cg-stream-collected)))
-                            (setq cg-stream-collected (match-string 2 cg-stream-collected))
-                            (cg-transition))
-                        (progn
-                          (setq cg-stream-msg (concat cg-stream-msg delta))
-                          (message "%s" (cg-sanitize cg-stream-msg)))))
-                     ((= cg-stream-state 2)
-                      ;; (with-current-buffer "*deltas*"
-                      ;;   (insert (format "\"%s\"\n" cg-stream-collected)))
-                      (when (string-match
-                             (rx (and   
-                                  "\\\"code\\\":"
-                                  (zero-or-more (or whitespace "\\n"))
-                                  "\\\""
-                                  (group (zero-or-more not-newline))))
-                             cg-stream-collected)
-                        (setq cg-confirmed-tokens (list
-                                                   (match-string 1 cg-stream-collected)))
-                        (setq cg-stream-collected "")
-                        (cg-transition)))
-                     ((= cg-stream-state 3)
-                      (if (string-match "\\([^\\]\\|^\\)\\\\\\\"" cg-stream-collected)
-                          (progn
-                            (cg-transition)
-                            ;; (with-current-buffer "*deltas*"
-                            ;;   (insert (format "\"%s\"\n" delta))
-                            ;;   (insert (format "\"%s\"\n" (match-string 1 delta))))
-                            (with-current-buffer "*test*"
-                              (erase-buffer)
-                              (insert
-                               (cg-sanitize
-                                (concat (mapconcat 'identity cg-confirmed-tokens "")
-                                        (if (string-match "\\(.*\\([^\\]\\|^\\)\\)\\\\\\\""
-                                                          delta)
-                                            (match-string 1 delta)
-                                          ""))))))
-                        (cl-destructuring-bind (new-confirmed-tokens
-                                                new-unconfirmed-tokens)
-                            (cg-accept-token cg-confirmed-tokens
-                                             cg-unconfirmed-tokens
-                                             delta)
-                          (setq cg-confirmed-tokens new-confirmed-tokens
-                                cg-unconfirmed-tokens new-unconfirmed-tokens)
-                          ;; trick to not display partial \
-                          (unless (equal (substring
-                                          (mapconcat 'identity cg-confirmed-tokens "")
-                                          -1)
-                                         "\\")
-                            (with-current-buffer "*test*"
-                              (erase-buffer)
-                              (insert
-                               (cg-sanitize
-                                (concat (mapconcat 'identity cg-confirmed-tokens "")
-                                        (mapconcat 'identity cg-unconfirmed-tokens ""))))))))))))))))))
+     (cg-make-stream-filter display-buffer uuid))))
 
 (defun cg-transition ()
   (setq cg-stream-state (1+ cg-stream-state))
@@ -517,21 +546,275 @@
 ;;     return flat_dict"
 ;;  "Please improve this.")
 
+
+(require 'org-id)
+
+(defmacro cg-lexical-flet (bindings &rest body)
+  "Temporarily override function definitions in BINDINGS while executing BODY."
+  (declare (indent defun))
+  `(cl-letf ,(mapcar (lambda (binding)
+                       (list (list 'symbol-function (list 'quote (car binding)))
+                             (cons 'lambda (cdr binding))))
+                     bindings)
+     ,@body))
+
+(defmacro lexical-flet (bindings &rest body)
+  "Temporarily override function definitions in BINDINGS while executing BODY."
+  (declare (indent defun))
+  `(cl-letf ,(mapcar (lambda (binding)
+                       (let ((g (gensym)))
+                         `((fset ',g (lambda ,@(cdr binding)))
+                           (symbol-function ',(car binding)))))
+                     bindings)
+     ,@body))
+
+(defmacro cg-with-functions (bindings &rest body)
+  "Bind functions in BINDINGS and make them available in BODY.
+
+Each element of BINDINGS is a list (FUNC ARGS ... BODY ...).
+Each element of BODY is a `defun` or `defmacro` form.
+
+Unlike `cl-flet`, the function bindings in BINDINGS are available
+inside the functions defined in BODY.
+
+Signals an error if a form in BODY is not `defun` or `defmacro`."
+  (declare (indent defun))
+  `(progn
+     ,@(mapcar (lambda (def)
+                 (let ((defun (car def))
+                       (name (cadr def))
+                       (args (caddr def))
+                       (body (cdddr def)))
+                   (unless (memq defun '(defun defmacro))
+                     (error "Expected 'defun or 'defmacro, got %s" defun))
+                   `(,defun ,name ,args
+                      (cl-flet ,bindings
+                        ,@body))))
+               body)))
+
+(cg-with-functions ((line-at-pos
+                     (pos)
+                     (save-excursion
+                       (goto-char pos)
+                       (thing-at-point 'line)))
+                    (on-last-line
+                     (pos)
+                     (eq (line-number-at-pos pos)
+                         (line-number-at-pos (point-max))))
+                    (on-first-line
+                     (pos)
+                     (eq (line-number-at-pos pos)
+                         (line-number-at-pos (point-min))))
+                    (line-end-position-at-pos
+                     (pos)
+                     (save-excursion
+                       (goto-char pos)
+                       (line-end-position)))
+                    (line-beginning-position-at-pos
+                     (pos)
+                     (save-excursion
+                       (goto-char pos)
+                       (line-beginning-position))))
+  (defun cg-get-block-start ()
+    (when (region-active-p)
+      (cond
+       ;; check this line
+       ((string-match "^# *chatgpt \\([a-z0-9-]*\\) start"
+                      (line-at-pos (region-beginning)))
+        (unless (on-last-line (region-beginning))
+          (line-beginning-position-at-pos
+           (save-excursion
+             (goto-char (region-beginning))
+             (next-line)
+             (point)))))
+       ;; check the next line
+       ((and
+         (not (on-first-line (region-beginning)))
+         (save-excursion
+           (goto-char (region-beginning))
+           (previous-line)
+           (string-match "\\`# *chatgpt \\([a-z0-9-]*\\) start"
+                         (line-at-pos (point)))))
+        (line-beginning-position-at-pos (region-beginning)))
+       (t
+        (line-beginning-position-at-pos (region-beginning))
+        ;; (let ((region (buffer-substring
+        ;;                (region-beginning)
+        ;;                (region-end))))
+        ;;   (if (string-match "^\\([ \t]*\n+\\)" region)
+        ;;       (+ (region-beginning)
+        ;;          (length (match-string 1 region)))
+        ;;     (line-beginning-position-at-pos (region-beginning))))
+        ))))
+
+  (defun cg-get-block-end ()
+    (when (region-active-p)
+      (cond
+       ;; check this line
+       ((string-match "^# *chatgpt \\([a-z0-9-]*\\) end"
+                      (line-at-pos (region-end)))
+        (unless (on-first-line (region-end))
+          (line-end-position-at-pos
+           (save-excursion
+             (goto-char (region-end))
+             (previous-line)
+             (point)))))
+       ;; check the next line
+       ((and
+         (not (on-last-line (region-end)))
+         (save-excursion
+           (goto-char (region-end))
+           (next-line)
+           (string-match "^# *chatgpt \\([a-z0-9-]*\\) end"
+                         (line-at-pos (point)))))
+        (line-end-position-at-pos (region-end)))
+       ((and
+         (not (on-first-line (region-end)))
+         (string= (line-at-pos (region-end)) "\n")
+         (save-excursion
+           (goto-char (region-end))
+           (previous-line)
+           (string-match "^# *chatgpt \\([a-z0-9-]*\\) end"
+                         (line-at-pos (point)))))
+        (line-end-position-at-pos
+         (save-excursion
+           (goto-char (region-end))
+           (previous-line 2)
+           (point))))
+       (t
+        (- (line-end-position-at-pos (region-end))
+           (if (string= (line-at-pos (region-end))
+                        "\n")
+               1
+             0))
+        ;; (let ((region (buffer-substring
+        ;;                (region-beginning)
+        ;;                (region-end))))
+        ;;   (if (string-match "\\([ \t\n]+\\)\\'" region)
+        ;;       (- (region-end)
+        ;;          (length (match-string 1 region)))
+        ;;     (line-end-position-at-pos (region-end))))
+        ))))
+
+  (defun cg-get-block-uuid (block-start block-end)
+    (when (and block-start block-end)
+      (unless (on-last-line block-end)
+        (let ((end-comment-line (save-excursion
+                                  (goto-char block-end)
+                                  (next-line)
+                                  (thing-at-point 'line))))
+          end-comment-line
+          (when (string-match
+                 "^# *chatgpt \\([a-z0-9-]*\\) end"
+                 end-comment-line)
+            (let ((maybe-uuid
+                   (match-string 1 end-comment-line)))
+              (when (and maybe-uuid (org-uuidgen-p maybe-uuid))
+                (let ((uuid maybe-uuid))
+                  (unless (on-first-line block-start)
+                    (save-excursion
+                      (goto-char block-start)
+                      (previous-line)
+                      (match-string 1 end-comment-line)
+                      (when (string-match
+                             (format
+                              "^# *chatgpt %s start"
+                              uuid)
+                             (thing-at-point 'line))
+                        (set-text-properties 0 (length uuid) nil uuid)
+                        uuid)))))))))))
+
+  (defun cg-replace-block (buffer uuid string)
+    (with-current-buffer buffer
+      (let ((saved-point (point)))
+        (goto-char (point-min))
+        (let* ((block-start
+                (re-search-forward
+                 (format
+                  "^# *chatgpt %s start\n"
+                  uuid)
+                 nil t))
+               (block-end
+                ;; nil if block-end is nil
+                (when block-start
+                  ;; this (next-line) is critical for making sure that
+                  ;; the block is at least 1 line high
+                  (next-line)
+                  (re-search-forward
+                   (format
+                    "^# *chatgpt %s end"
+                    uuid)
+                   nil t)
+                  (previous-line)
+                  (line-end-position))))
+          (when block-end
+            ;; we know block-start is non-nil
+            (delete-region block-start block-end)
+            (goto-char block-start)
+            (insert string)
+            (cond ((< saved-point block-start)
+                   (goto-char saved-point))
+                  ((< block-end saved-point)
+                   (goto-char
+                    (+
+                     ;; difference between old and new blocks
+                     (- (length string)
+                        (- block-end block-start))
+                     saved-point)))
+                  (t
+                   (goto-char block-start)))))))))
+
 ;; need to properly escape things, look for the general solution
 (defun chatgpt-self-edit (code query)
   (interactive
    (list (if (region-active-p)
              (buffer-substring-no-properties (region-beginning) (region-end))
            "")
-         (let ((query-type (completing-read "Type of Query: "
-                                            (cons "custom"
-                                                  (mapcar #'car chatgpt-code-query-map)))))
-           (cond ((assoc query-type chatgpt-code-query-map)
-                  (cdr (assoc query-type chatgpt-code-query-map)))
-                 ((equal query-type "custom")
-                  (read-from-minibuffer "ChatGPT Custom Prompt: "))
-                 (t query-type)))))
-  (cg-run-this code query))
+         (if (region-active-p)
+             (let ((query-type (completing-read "Type of Query: "
+                                                (cons "custom"
+                                                      (mapcar #'car chatgpt-code-query-map)))))
+               (cond ((assoc query-type chatgpt-code-query-map)
+                      (cdr (assoc query-type chatgpt-code-query-map)))
+                     ((equal query-type "custom")
+                      (read-from-minibuffer "ChatGPT Custom Prompt: "))
+                     (t query-type)))
+           "")))
+  (flet ((insert-block-comment-line
+          (uuid suffix)
+          (insert
+           (format
+            "%s%s%s\n"
+            (cond ((memq major-mode '(emacs-lisp-mode
+                                      lisp-mode
+                                      clojure-mode
+                                      scheme-mode
+                                      hy-mode))
+                   ";;")
+                  (t comment-start))
+            (format
+             "chatgpt %s %s"
+             uuid suffix)
+            comment-end))))
+    (if (region-active-p)
+        (let* ((block-start (cg-get-block-start))
+               (block-end (cg-get-block-end))
+               (saved-point (point))
+               (existing-uuid (cg-get-block-uuid block-start block-end))
+               (uuid (or existing-uuid (org-id-new))))
+          ;; insert lines if this block doesn't have block comments
+          (unless existing-uuid
+            (goto-char block-end)
+            (newline)
+            (insert-block-comment-line uuid "end")
+            (goto-char block-start)
+            (insert-block-comment-line uuid "start")
+            (goto-char (+ saved-point
+                          (length "#  chatgpt ")
+                          (length uuid)
+                          (length " start"))))
+          (cg-run-this code query (current-buffer) uuid))
+      (chatgpt-query))))
 
 ;; (get-buffer-create "*test*")
 
