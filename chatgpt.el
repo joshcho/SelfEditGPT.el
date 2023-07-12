@@ -405,20 +405,20 @@
       string)))))
 
 (defun cg-make-stream-filter (display-buffer uuid)
-  (lexical-let ((cg-stream-state 0)
-                (cg-confirmed-tokens '())
-                (cg-unconfirmed-tokens (tokenize-string code "gpt-4"))
-                (cg-stream-msg "")
-                (cg-stream-collected "")
+  (lexical-let ((stream-state 0)
+                (confirmed-tokens '())
+                (unconfirmed-tokens (tokenize-string code "gpt-4"))
+                (stream-msg "")
+                (stream-collected "")
                 (display-buffer display-buffer)
                 (uuid uuid))
     (lambda (process output)
       (flet ((transition
               ()
-              (setq cg-stream-state (1+ cg-stream-state))
+              (setq stream-state (1+ stream-state))
               (with-current-buffer "*deltas*"
                 (goto-char (point-max))
-                (insert (format "\n\n%d\n" cg-stream-state)))))
+                (insert (format "\n\n%d\n" stream-state)))))
         (with-current-buffer (process-buffer process)
           (goto-char (point-max))
           ;; catching errors, doesn't work i think
@@ -438,10 +438,10 @@
                 (with-current-buffer "*deltas*"
                   (insert (format "\"%s\", " delta)))
                 (setq start (match-end 0))
-                (setq cg-stream-collected (concat cg-stream-collected delta))
-                (cond ((= cg-stream-state 0)
+                (setq stream-collected (concat stream-collected delta))
+                (cond ((= stream-state 0)
                        ;; (with-current-buffer "*deltas*"
-                       ;;   (insert (format "\"%s\"\n" cg-stream-collected)))
+                       ;;   (insert (format "\"%s\"\n" stream-collected)))
                        (when (string-match
                               (rx (and
                                    line-start "{"
@@ -450,24 +450,24 @@
                                    (zero-or-more (or whitespace "\\n"))
                                    "\\\""
                                    (group (zero-or-more not-newline))))
-                              cg-stream-collected)
-                         (setq cg-stream-msg (match-string 1 cg-stream-collected))
-                         (message "%s" (cg-sanitize cg-stream-msg))
+                              stream-collected)
+                         (setq stream-msg (match-string 1 stream-collected))
+                         (message "%s" (cg-sanitize stream-msg))
                          (transition)
-                         (setq cg-stream-collected "")))
-                      ((= cg-stream-state 1)
+                         (setq stream-collected "")))
+                      ((= stream-state 1)
                        (if (string-match
-                            "\\(.*[^\\\\]\\)\\\\\"\\(.*\\)" cg-stream-collected)
+                            "\\(.*[^\\\\]\\)\\\\\"\\(.*\\)" stream-collected)
                            (progn
-                             (message "%s" (cg-sanitize (match-string 1 cg-stream-collected)))
-                             (setq cg-stream-collected (match-string 2 cg-stream-collected))
+                             (message "%s" (cg-sanitize (match-string 1 stream-collected)))
+                             (setq stream-collected (match-string 2 stream-collected))
                              (transition))
                          (progn
-                           (setq cg-stream-msg (concat cg-stream-msg delta))
-                           (message "%s" (cg-sanitize cg-stream-msg)))))
-                      ((= cg-stream-state 2)
+                           (setq stream-msg (concat stream-msg delta))
+                           (message "%s" (cg-sanitize stream-msg)))))
+                      ((= stream-state 2)
                        ;; (with-current-buffer "*deltas*"
-                       ;;   (insert (format "\"%s\"\n" cg-stream-collected)))
+                       ;;   (insert (format "\"%s\"\n" stream-collected)))
                        (when (string-match
                               (rx (and
                                    "\\\"code\\\":"
@@ -475,12 +475,12 @@
                                    "\\\""
                                    (zero-or-more (or whitespace "\\n"))
                                    (group (zero-or-more not-newline))))
-                              cg-stream-collected)
-                         (setq cg-confirmed-tokens (list
-                                                    (match-string 1 cg-stream-collected)))
-                         (setq cg-stream-collected "")
+                              stream-collected)
+                         (setq confirmed-tokens (list
+                                                 (match-string 1 stream-collected)))
+                         (setq stream-collected "")
                          (transition)))
-                      ((= cg-stream-state 3)
+                      ((= stream-state 3)
                        (if (string-match ;; "\\([^\\]\\|^\\)\\\\\\\""
                             (rx
                              (and
@@ -489,9 +489,9 @@
                               (zero-or-more (or whitespace "\\n"))
                               "}"))
                             ;; "\\\"\\n}"
-                            cg-stream-collected)
+                            stream-collected)
                            (let ((final-string
-                                  (concat (apply #'s-concat cg-confirmed-tokens)
+                                  (concat (apply #'s-concat confirmed-tokens)
                                           delta)))
                              (transition)
                              (cg-replace-block display-buffer
@@ -501,12 +501,12 @@
                                                  final-string
                                                  0
                                                  (- (length final-string)
-                                                    (length (match-string 0 cg-stream-collected))))))
+                                                    (length (match-string 0 stream-collected))))))
                              ;; (with-current-buffer "*test*"
                              ;;   (erase-buffer)
                              ;;   (insert
                              ;;    (cg-sanitize
-                             ;;     (concat (mapconcat 'identity cg-confirmed-tokens "")
+                             ;;     (concat (mapconcat 'identity confirmed-tokens "")
                              ;;             (if (string-match "\\(.*\\([^\\]\\|^\\)\\)\\\\\\\""
                              ;;                               delta)
                              ;;                 (match-string 1 delta)
@@ -514,27 +514,27 @@
                              )
                          (cl-destructuring-bind (new-confirmed-tokens
                                                  new-unconfirmed-tokens)
-                             (cg-accept-token cg-confirmed-tokens
-                                              cg-unconfirmed-tokens
+                             (cg-accept-token confirmed-tokens
+                                              unconfirmed-tokens
                                               delta)
-                           (setq cg-confirmed-tokens new-confirmed-tokens
-                                 cg-unconfirmed-tokens new-unconfirmed-tokens)
+                           (setq confirmed-tokens new-confirmed-tokens
+                                 unconfirmed-tokens new-unconfirmed-tokens)
                            ;; trick to not display partial \
                            (unless (equal (substring
-                                           (mapconcat 'identity cg-confirmed-tokens "")
+                                           (mapconcat 'identity confirmed-tokens "")
                                            -1)
                                           "\\")
                              (cg-replace-block display-buffer
                                                uuid
                                                (cg-sanitize
-                                                (concat (mapconcat 'identity cg-confirmed-tokens "")
-                                                        (mapconcat 'identity cg-unconfirmed-tokens ""))))
+                                                (concat (mapconcat 'identity confirmed-tokens "")
+                                                        (mapconcat 'identity unconfirmed-tokens ""))))
                              ;; (with-current-buffer "*test*"
                              ;;   (erase-buffer)
                              ;;   (insert
                              ;;    (cg-sanitize
-                             ;;     (concat (mapconcat 'identity cg-confirmed-tokens "")
-                             ;;             (mapconcat 'identity cg-unconfirmed-tokens "")))))
+                             ;;     (concat (mapconcat 'identity confirmed-tokens "")
+                             ;;             (mapconcat 'identity unconfirmed-tokens "")))))
                              )))))))))))))
 
 (defun cg-run-this (code query display-buffer uuid)
@@ -551,24 +551,6 @@
      (cg-make-stream-filter display-buffer uuid))))
 
 (require 'org-id)
-(defmacro cg-lexical-flet (bindings &rest body)
-  "Temporarily override function definitions in BINDINGS while executing BODY."
-  (declare (indent defun))
-  `(cl-letf ,(mapcar (lambda (binding)
-                       (list (list 'symbol-function (list 'quote (car binding)))
-                             (cons 'lambda (cdr binding))))
-                     bindings)
-     ,@body))
-
-(defmacro lexical-flet (bindings &rest body)
-  "Temporarily override function definitions in BINDINGS while executing BODY."
-  (declare (indent defun))
-  `(cl-letf ,(mapcar (lambda (binding)
-                       (let ((g (gensym)))
-                         `((fset ',g (lambda ,@(cdr binding)))
-                           (symbol-function ',(car binding)))))
-                     bindings)
-     ,@body))
 
 (defmacro cg-with-functions (bindings &rest body)
   "Bind functions in BINDINGS and make them available in BODY.
