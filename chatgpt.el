@@ -354,10 +354,18 @@
         ;;         new-unconfirmed-tokens))
         ))))
 
+(defcustom chatgpt-mode 'code
+  "My custom variable."
+  :type '(choice (const :tag "Writing" 'writing)
+                 (const :tag "Code" 'code)))
+
 (defun cg-code-query-json (code query)
   (json-encode `(("model" . "gpt-4")
                  ("messages" . ((("role" . "system")
-                                 ("content" . "You are UpdatedCodeAI. The user provides a request or a query followed by the code. Please provide the answer in prose and the full updated code. Do NOT provide just the differences. Provide the updated code in full. Do NOT attempt to create new files. When providing code, remove the first \"Assistant:\" line."))
+                                 ("content" .
+                                  ,(if (eq chatgpt-mode 'writing)
+                                       "You are UpdatedWritingAI. The user provides a request or a query followed by the wirting. Please provide the answer in prose and the full updated writing. Do NOT provide just the differences. Maintain the structure of the original writing; don't revamp everything unless explicitly asked. Provide the updated writing in full. When providing the writing, remove the first \"Assistant:\" line."
+                                     "You are UpdatedCodeAI. The user provides a request or a query followed by the code. Please provide the answer in prose and the full updated code. Do NOT provide just the differences. Provide the updated code in full. Do NOT attempt to create new files. When providing code, remove the first \"Assistant:\" line.")))
                                 (("role" . "user")
                                  ("content" .
                                   ,(concat
@@ -374,7 +382,10 @@
                                          ("description" . "Prose answer for the query. Give the answer in progressive (e.g. I am doing...) form.")))
                                        ("code" .
                                         (("type" . "string")
-                                         ("description" . "Modified code (just the code). If in Lisp, prefer ;; over ;.")))))
+                                         ("description" .
+                                          ,(if (eq chatgpt-mode 'writing)
+                                               "Modified writing"
+                                             "Modified code (just the code). If in Lisp, prefer ;; over ;."))))))
                       ("required" . ("answer" "code")))))))
                  ("function_call" .
                   (("name" . "answer_with_code")))
