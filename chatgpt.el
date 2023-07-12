@@ -472,6 +472,11 @@
     ;; Return the resulting string
     (buffer-string)))
 
+(defcustom chatgpt-use-moving-cursor t
+  "Moving cursor during streaming."
+  :type 'boolean
+  :group 'chatgpt)
+
 (defun cg-make-stream-filter (display-buffer uuid)
   (lexical-let* ((stream-state 0)
                  (confirmed-tokens '())
@@ -612,14 +617,47 @@
                              (cg-replace-block
                               display-buffer
                               uuid
-                              (concat
-                               (cg-commented-fill
-                                stream-msg
-                                (cg-true-comment-start display-buffer))
-                               (cg-sanitize
-                                (concat
-                                 (mapconcat 'identity confirmed-tokens "")
-                                 (mapconcat 'identity unconfirmed-tokens ""))))))))))))))))))
+                              (let* ((str1 (cg-commented-fill
+                                            stream-msg
+                                            (cg-true-comment-start display-buffer)))
+                                     (str2
+                                      (if chatgpt-use-moving-cursor
+                                          (concat
+                                           (cg-sanitize
+                                            (mapconcat 'identity confirmed-tokens ""))
+                                           (cg-change-first-char-face
+                                            (cg-sanitize
+                                             (mapconcat 'identity unconfirmed-tokens ""))
+                                            'gray-background))
+                                        (cg-sanitize
+                                         (concat
+                                          (mapconcat 'identity confirmed-tokens "")
+                                          (mapconcat 'identity unconfirmed-tokens ""))))))
+                                (concat str1 str2))))))))))))))))
+
+(defun cg-change-first-char-face (text face)
+  (cl-flet ((fontify-using-faces
+              (text)
+              (let ((pos 0)
+                    next)
+                (while (setq next (next-single-property-change pos 'face text))
+                  (put-text-property pos next 'font-lock-face
+                                     (get-text-property pos 'face text) text)
+                  (setq pos next))
+                (add-text-properties 0  (length text) '(fontified t) text)
+                text)))
+    (unless (equal text "")
+      (fontify-using-faces
+       (with-temp-buffer
+         (insert text)
+         (font-lock-ensure)
+         (let ((buffer-string (buffer-string)))
+           (put-text-property 0 1 'font-lock-face face buffer-string)
+           buffer-string))))))
+
+(defface gray-background
+  '((t :background "gray"))
+  "Face with a gray background.")
 
 (defun cg-run-this (code query display-buffer uuid)
   (let ((process (start-process "curl-process" "*curl-output*" "/bin/bash" "-c"
