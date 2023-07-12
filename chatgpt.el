@@ -147,13 +147,13 @@
   "Additional expressions to highlight in `chatgpt-mode'.")
 
 (defcustom chatgpt-code-query-map
-  '(("bug" . "There is a bug in the following, please help me fix it.")
+  '(("fix" . "Please fix.")
+    ("example" . "Please add examples.")
     ("doc" . "Please write the documentation for the following.")
     ("improve" . "Please improve the following.")
-    ("fix" . "Please fix.")
-    ("understand" . "What is the following?")
-    ("refactor" . "Please refactor the following.")
-    ("suggest" . "Please make suggestions for the following."))
+    ("understand" . "Annotate the code so that I can understand.")
+    ;; ("suggest" . "Please make suggestions for the following.")
+    )
   "An association list that maps query types to their corresponding query."
   :type '(alist :key-type (string :tag "Query Type")
                 :value-type (string :tag "Query String"))
@@ -367,27 +367,24 @@
                     ("Authorization" . ,(concat "Bearer " (getenv "OPENAI_API_KEY")))))
          (headers-string (mapconcat (lambda (header)
                                       (concat "-H \"" (car header) ": " (cdr header) "\""))
-                                    headers " ")))
-    (with-current-buffer "*outputs*"
-      (insert
-       (concat "curl -X POST "
-               headers-string
-               " -d \""
-               (s-replace
-                "`" "\\`"
-                (s-replace "\"" "\\\""
-                           json-data-string))
-               "\" "
-               url)))
-    (concat "curl -X POST "
-            headers-string
-            " -d \""
-            (s-replace
-             "`" "\\`"
-             (s-replace "\"" "\\\""
-                        json-data-string))
-            "\" "
-            url)))
+                                    headers " "))
+         (curl-command
+          (concat "curl -X POST "
+                  headers-string
+                  " -d \""
+                  (s-replace
+                   "`" "\\`"
+                   (s-replace
+                    "\\\\\"" "\\\\\\\""
+                    (s-replace
+                     "\"" "\\\""
+                     json-data-string)))
+                  "\" "
+                  url)))
+    (with-current-buffer "*outputs-1*"
+      (insert curl-command)
+      (insert "\n"))
+    curl-command))
 
 (defun cg-sanitize (string)
   (s-replace
