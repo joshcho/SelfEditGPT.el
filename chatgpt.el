@@ -4,7 +4,7 @@
 
 ;; Author: Jungmin "Josh" Cho <joshchonpc@gmail.com>
 ;; Version: 0.2
-;; Package-Requires: ((polymode "0.2.2") (dash "2.19.1"))
+;; Package-Requires: ((polymode "0.2.2") (dash "2.19.1") (s "1.13.1"))
 ;; Keywords: ai, openai, chatgpt, assistant
 ;; URL: https://github.com/joshcho/ChatGPT.el
 
@@ -309,6 +309,7 @@
       (read (current-buffer)))))
 
 (require 'dash)
+(require 's)
 
 ;; improvements: set a cap so that after, say, window-size 10, we check anywhere in the remaining string for match
 (defun cg-accept-token (confirmed-tokens unconfirmed-tokens token)
@@ -337,7 +338,7 @@
 (defun cg-code-query-json (code query)
   (json-encode `(("model" . "gpt-4")
                  ("messages" . ((("role" . "system")
-                                 ("content" . "Respond with answer_with_code."))
+                                 ("content" . "You are UpdatedCodeAI. The user provides a request or a query followed by the code. Please provide the answer in prose and the full updated code. Do NOT provide just the differences. Provide the updated code in full."))
                                 (("role" . "user")
                                  ("content" .
                                   ,(concat
@@ -351,7 +352,7 @@
                      (("type" . "object")
                       ("properties" . (("answer" .
                                         (("type" . "string")
-                                         ("description" . "Answer for the query. Return in progressive form, with -ing")))
+                                         ("description" . "Prose answer for the query.")))
                                        ("code" .
                                         (("type" . "string")
                                          ("description" . "Modified code (just the code)")))))
@@ -360,20 +361,28 @@
                   (("name" . "answer_with_code")))
                  ("stream" . t))))
 
-(defun cg-openai-curl-command (data)
+(defun cg-openai-curl-command (json-data-string)
   (let* ((url "https://api.openai.com/v1/chat/completions")
          (headers `(("Content-Type" . "application/json")
                     ("Authorization" . ,(concat "Bearer " (getenv "OPENAI_API_KEY")))))
          (headers-string (mapconcat (lambda (header)
                                       (concat "-H \"" (car header) ": " (cdr header) "\""))
-                                    headers " "))
-         (curl-command (concat "curl -X POST "
-                               headers-string
-                               " -d '" data "' "
-                               url)))
+                                    headers " ")))
+    (with-current-buffer "*outputs*"
+      (insert
+       (concat "curl -X POST "
+               headers-string
+               " -d \""
+               (s-replace "\"" "\\\""
+                          json-data-string)
+               "\" "
+               url)))
     (concat "curl -X POST "
             headers-string
-            " -d '" data "' "
+            " -d \""
+            (s-replace "\"" "\\\""
+                       json-data-string)
+            "\" "
             url)))
 
 (defvar cg-confirmed-tokens '())
@@ -383,16 +392,19 @@
 (defvar cg-stream-collected "")
 
 (defun cg-sanitize (string)
-  (replace-regexp-in-string
-   "\\\\\\\\\\\\\\\""
+  (s-replace
+   "\\\\\""
    "\""
-   (replace-regexp-in-string
-    "\\\\\\n"
-    "\n"
-    (replace-regexp-in-string
-     "\\\\\\\\\\n"
+   (s-replace
+    "\\\""
+    "\""
+    (s-replace
+     "\\n"
      "\n"
-     string))))
+     (s-replace
+      "\\\\n"
+      "\n"
+      string)))))
 
 (defun cg-make-stream-filter (display-buffer uuid)
   (lexical-let ((display-buffer display-buffer)
@@ -468,7 +480,7 @@
                           ;; "\\\"\\n}"
                           cg-stream-collected)
                          (let ((final-string
-                                (concat (apply #'concat cg-confirmed-tokens)
+                                (concat (apply #'s-concat cg-confirmed-tokens)
                                         delta)))
                            (cg-transition)
                            (cg-replace-block display-buffer
@@ -749,9 +761,6 @@ Signals an error if a form in BODY is not `defun` or `defmacro`."
                   (line-end-position))))
           (when block-end
             ;; we know block-start is non-nil
-            (delete-region block-start block-end)
-            (goto-char block-start)
-            (insert string)
             (cond ((< saved-point block-start)
                    (goto-char saved-point))
                   ((< block-end saved-point)
@@ -762,7 +771,17 @@ Signals an error if a form in BODY is not `defun` or `defmacro`."
                         (- block-end block-start))
                      saved-point)))
                   (t
-                   (goto-char block-start)))))))))
+                   (goto-char saved-point)))))))))
+
+(defun cg-true-comment-start (buffer)
+  (with-current-buffer buffer
+    (cond ((memq major-mode '(emacs-lisp-mode
+                              lisp-mode
+                              clojure-mode
+                              scheme-mode
+                              hy-mode))
+           ";;")
+          (t comment-start))))
 
 ;; need to properly escape things, look for the general solution
 (defun chatgpt-self-edit (code query)
@@ -780,22 +799,13 @@ Signals an error if a form in BODY is not `defun` or `defmacro`."
                       (read-from-minibuffer "ChatGPT Custom Prompt: "))
                      (t query-type)))
            "")))
-  (flet ((insert-block-comment-line
+  (flet ((block-comment-line
           (uuid suffix)
-          (insert
-           (format
-            "%s%s%s\n"
-            (cond ((memq major-mode '(emacs-lisp-mode
-                                      lisp-mode
-                                      clojure-mode
-                                      scheme-mode
-                                      hy-mode))
-                   ";;")
-                  (t comment-start))
-            (format
-             "chatgpt %s %s"
-             uuid suffix)
-            comment-end))))
+          (format
+           "%schatgpt %s %s%s\n"
+           (cg-true-comment-start (current-buffer))
+           uuid suffix
+           comment-end)))
     (if (region-active-p)
         (let* ((block-start (cg-get-block-start))
                (block-end (cg-get-block-end))
@@ -806,13 +816,20 @@ Signals an error if a form in BODY is not `defun` or `defmacro`."
           (unless existing-uuid
             (goto-char block-end)
             (newline)
-            (insert-block-comment-line uuid "end")
+            (insert (block-comment-line uuid "end"))
             (goto-char block-start)
-            (insert-block-comment-line uuid "start")
-            (goto-char (+ saved-point
-                          (length "#  chatgpt ")
-                          (length uuid)
-                          (length " start"))))
+            (insert (block-comment-line uuid "start"))
+            (goto-char
+             (cond ((< saved-point block-start)
+                    saved-point)
+                   ((< block-end saved-point)
+                    (+ saved-point
+                       (length (block-comment-line uuid "start"))
+                       (length (block-comment-line uuid "end"))))
+                   (t
+                    ;; point in block
+                    (+ saved-point
+                       (length (block-comment-line uuid "start")))))))
           (cg-run-this code query (current-buffer) uuid))
       (chatgpt-query))))
 
