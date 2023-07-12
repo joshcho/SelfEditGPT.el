@@ -373,23 +373,21 @@
        (concat "curl -X POST "
                headers-string
                " -d \""
-               (s-replace "\"" "\\\""
-                          json-data-string)
+               (s-replace
+                "`" "\\`"
+                (s-replace "\"" "\\\""
+                           json-data-string))
                "\" "
                url)))
     (concat "curl -X POST "
             headers-string
             " -d \""
-            (s-replace "\"" "\\\""
-                       json-data-string)
+            (s-replace
+             "`" "\\`"
+             (s-replace "\"" "\\\""
+                        json-data-string))
             "\" "
             url)))
-
-(defvar cg-confirmed-tokens '())
-(defvar cg-unconfirmed-tokens '())
-(defvar cg-stream-msg "")
-(defvar cg-stream-state 0)
-(defvar cg-stream-collected "")
 
 (defun cg-sanitize (string)
   (s-replace
@@ -407,134 +405,142 @@
       string)))))
 
 (defun cg-make-stream-filter (display-buffer uuid)
-  (lexical-let ((display-buffer display-buffer)
+  (lexical-let ((cg-stream-state 0)
+                (cg-confirmed-tokens '())
+                (cg-unconfirmed-tokens (tokenize-string code "gpt-4"))
+                (cg-stream-msg "")
+                (cg-stream-collected "")
+                (display-buffer display-buffer)
                 (uuid uuid))
     (lambda (process output)
-      (with-current-buffer (process-buffer process)
-        (goto-char (point-max))
-        ;; catching errors, doesn't work i think
-        ;; (when (string-match "^data: {\"error\":{\"message\":\"\\([^\"]*\\)\""
-        ;;                     output)
-        ;;   (message (match-string 1 output)))
-
-        ;; severe debugging
-        (with-current-buffer (get-buffer-create "*outputs*")
-          (insert (format "\"%s\"\n" output)))
-        (let ((start 0))
-          (while (string-match
-                  ;; abomination, captures escaped quotation marks
-                  "\"arguments\":\"\\(\\(\\\\.\\|[^\"\\]\\)*\\)\""
-                  output start)
-            (let ((delta (match-string 1 output)))
+      (flet ((transition
+              ()
+              (setq cg-stream-state (1+ cg-stream-state))
               (with-current-buffer "*deltas*"
-                (insert (format "\"%s\", " delta)))
-              (setq start (match-end 0))
-              (setq cg-stream-collected (concat cg-stream-collected delta))
-              (cond ((= cg-stream-state 0)
-                     ;; (with-current-buffer "*deltas*"
-                     ;;   (insert (format "\"%s\"\n" cg-stream-collected)))
-                     (when (string-match
-                            (rx (and
-                                 line-start "{"
-                                 (zero-or-more (or whitespace "\\n"))
-                                 "\\\"answer\\\":"
-                                 (zero-or-more (or whitespace "\\n"))
-                                 "\\\""
-                                 (group (zero-or-more not-newline))))
-                            cg-stream-collected)
-                       (setq cg-stream-msg (match-string 1 cg-stream-collected))
-                       (message "%s" (cg-sanitize cg-stream-msg))
-                       (cg-transition)
-                       (setq cg-stream-collected "")))
-                    ((= cg-stream-state 1)
-                     (if (string-match
-                          "\\(.*[^\\\\]\\)\\\\\"\\(.*\\)" cg-stream-collected)
+                (goto-char (point-max))
+                (insert (format "\n\n%d\n" cg-stream-state)))))
+        (with-current-buffer (process-buffer process)
+          (goto-char (point-max))
+          ;; catching errors, doesn't work i think
+          ;; (when (string-match "^data: {\"error\":{\"message\":\"\\([^\"]*\\)\""
+          ;;                     output)
+          ;;   (message (match-string 1 output)))
+
+          ;; severe debugging
+          (with-current-buffer (get-buffer-create "*outputs*")
+            (insert (format "\"%s\"\n" output)))
+          (let ((start 0))
+            (while (string-match
+                    ;; abomination, captures escaped quotation marks
+                    "\"arguments\":\"\\(\\(\\\\.\\|[^\"\\]\\)*\\)\""
+                    output start)
+              (let ((delta (match-string 1 output)))
+                (with-current-buffer "*deltas*"
+                  (insert (format "\"%s\", " delta)))
+                (setq start (match-end 0))
+                (setq cg-stream-collected (concat cg-stream-collected delta))
+                (cond ((= cg-stream-state 0)
+                       ;; (with-current-buffer "*deltas*"
+                       ;;   (insert (format "\"%s\"\n" cg-stream-collected)))
+                       (when (string-match
+                              (rx (and
+                                   line-start "{"
+                                   (zero-or-more (or whitespace "\\n"))
+                                   "\\\"answer\\\":"
+                                   (zero-or-more (or whitespace "\\n"))
+                                   "\\\""
+                                   (group (zero-or-more not-newline))))
+                              cg-stream-collected)
+                         (setq cg-stream-msg (match-string 1 cg-stream-collected))
+                         (message "%s" (cg-sanitize cg-stream-msg))
+                         (transition)
+                         (setq cg-stream-collected "")))
+                      ((= cg-stream-state 1)
+                       (if (string-match
+                            "\\(.*[^\\\\]\\)\\\\\"\\(.*\\)" cg-stream-collected)
+                           (progn
+                             (message "%s" (cg-sanitize (match-string 1 cg-stream-collected)))
+                             (setq cg-stream-collected (match-string 2 cg-stream-collected))
+                             (transition))
                          (progn
-                           (message "%s" (cg-sanitize (match-string 1 cg-stream-collected)))
-                           (setq cg-stream-collected (match-string 2 cg-stream-collected))
-                           (cg-transition))
-                       (progn
-                         (setq cg-stream-msg (concat cg-stream-msg delta))
-                         (message "%s" (cg-sanitize cg-stream-msg)))))
-                    ((= cg-stream-state 2)
-                     ;; (with-current-buffer "*deltas*"
-                     ;;   (insert (format "\"%s\"\n" cg-stream-collected)))
-                     (when (string-match
-                            (rx (and
-                                 "\\\"code\\\":"
-                                 (zero-or-more (or whitespace "\\n"))
-                                 "\\\""
-                                 (group (zero-or-more not-newline))))
+                           (setq cg-stream-msg (concat cg-stream-msg delta))
+                           (message "%s" (cg-sanitize cg-stream-msg)))))
+                      ((= cg-stream-state 2)
+                       ;; (with-current-buffer "*deltas*"
+                       ;;   (insert (format "\"%s\"\n" cg-stream-collected)))
+                       (when (string-match
+                              (rx (and
+                                   "\\\"code\\\":"
+                                   (zero-or-more (or whitespace "\\n"))
+                                   "\\\""
+                                   (zero-or-more (or whitespace "\\n"))
+                                   (group (zero-or-more not-newline))))
+                              cg-stream-collected)
+                         (setq cg-confirmed-tokens (list
+                                                    (match-string 1 cg-stream-collected)))
+                         (setq cg-stream-collected "")
+                         (transition)))
+                      ((= cg-stream-state 3)
+                       (if (string-match ;; "\\([^\\]\\|^\\)\\\\\\\""
+                            (rx
+                             (and
+                              (zero-or-more (or whitespace "\\n"))
+                              "\\\""
+                              (zero-or-more (or whitespace "\\n"))
+                              "}"))
+                            ;; "\\\"\\n}"
                             cg-stream-collected)
-                       (setq cg-confirmed-tokens (list
-                                                  (match-string 1 cg-stream-collected)))
-                       (setq cg-stream-collected "")
-                       (cg-transition)))
-                    ((= cg-stream-state 3)
-                     (if (string-match ;; "\\([^\\]\\|^\\)\\\\\\\""
-                          (rx
-                           (and
-                            "\\\""
-                            (zero-or-more (or whitespace "\\n"))
-                            "}"))
-                          ;; "\\\"\\n}"
-                          cg-stream-collected)
-                         (let ((final-string
-                                (concat (apply #'s-concat cg-confirmed-tokens)
-                                        delta)))
-                           (cg-transition)
-                           (cg-replace-block display-buffer
-                                             uuid
-                                             (cg-sanitize
-                                              (substring
-                                               final-string
-                                               0
-                                               (- (length final-string)
-                                                  (length (match-string 0 cg-stream-collected))))))
-                           ;; (with-current-buffer "*test*"
-                           ;;   (erase-buffer)
-                           ;;   (insert
-                           ;;    (cg-sanitize
-                           ;;     (concat (mapconcat 'identity cg-confirmed-tokens "")
-                           ;;             (if (string-match "\\(.*\\([^\\]\\|^\\)\\)\\\\\\\""
-                           ;;                               delta)
-                           ;;                 (match-string 1 delta)
-                           ;;               "")))))
-                           )
-                       (cl-destructuring-bind (new-confirmed-tokens
-                                               new-unconfirmed-tokens)
-                           (cg-accept-token cg-confirmed-tokens
-                                            cg-unconfirmed-tokens
-                                            delta)
-                         (setq cg-confirmed-tokens new-confirmed-tokens
-                               cg-unconfirmed-tokens new-unconfirmed-tokens)
-                         ;; trick to not display partial \
-                         (unless (equal (substring
-                                         (mapconcat 'identity cg-confirmed-tokens "")
-                                         -1)
-                                        "\\")
-                           (cg-replace-block display-buffer
-                                             uuid
-                                             (cg-sanitize
-                                              (concat (mapconcat 'identity cg-confirmed-tokens "")
-                                                      (mapconcat 'identity cg-unconfirmed-tokens ""))))
-                           ;; (with-current-buffer "*test*"
-                           ;;   (erase-buffer)
-                           ;;   (insert
-                           ;;    (cg-sanitize
-                           ;;     (concat (mapconcat 'identity cg-confirmed-tokens "")
-                           ;;             (mapconcat 'identity cg-unconfirmed-tokens "")))))
-                           ))))))))))))
+                           (let ((final-string
+                                  (concat (apply #'s-concat cg-confirmed-tokens)
+                                          delta)))
+                             (transition)
+                             (cg-replace-block display-buffer
+                                               uuid
+                                               (cg-sanitize
+                                                (substring
+                                                 final-string
+                                                 0
+                                                 (- (length final-string)
+                                                    (length (match-string 0 cg-stream-collected))))))
+                             ;; (with-current-buffer "*test*"
+                             ;;   (erase-buffer)
+                             ;;   (insert
+                             ;;    (cg-sanitize
+                             ;;     (concat (mapconcat 'identity cg-confirmed-tokens "")
+                             ;;             (if (string-match "\\(.*\\([^\\]\\|^\\)\\)\\\\\\\""
+                             ;;                               delta)
+                             ;;                 (match-string 1 delta)
+                             ;;               "")))))
+                             )
+                         (cl-destructuring-bind (new-confirmed-tokens
+                                                 new-unconfirmed-tokens)
+                             (cg-accept-token cg-confirmed-tokens
+                                              cg-unconfirmed-tokens
+                                              delta)
+                           (setq cg-confirmed-tokens new-confirmed-tokens
+                                 cg-unconfirmed-tokens new-unconfirmed-tokens)
+                           ;; trick to not display partial \
+                           (unless (equal (substring
+                                           (mapconcat 'identity cg-confirmed-tokens "")
+                                           -1)
+                                          "\\")
+                             (cg-replace-block display-buffer
+                                               uuid
+                                               (cg-sanitize
+                                                (concat (mapconcat 'identity cg-confirmed-tokens "")
+                                                        (mapconcat 'identity cg-unconfirmed-tokens ""))))
+                             ;; (with-current-buffer "*test*"
+                             ;;   (erase-buffer)
+                             ;;   (insert
+                             ;;    (cg-sanitize
+                             ;;     (concat (mapconcat 'identity cg-confirmed-tokens "")
+                             ;;             (mapconcat 'identity cg-unconfirmed-tokens "")))))
+                             )))))))))))))
 
 (defun cg-run-this (code query display-buffer uuid)
   (let ((process (start-process "curl-process" "*curl-output*" "/bin/bash" "-c"
                                 (cg-openai-curl-command
                                  (cg-code-query-json code query)))))
-    (setq cg-stream-state 0)
-    (setq cg-confirmed-tokens '())
-    (setq cg-unconfirmed-tokens (tokenize-string code "gpt-4"))
-    (setq cg-stream-msg "")
-    (setq cg-stream-collected "")
     (with-current-buffer (get-buffer-create "*test*")
       (erase-buffer)
       (insert code))
@@ -544,23 +550,7 @@
      process
      (cg-make-stream-filter display-buffer uuid))))
 
-(defun cg-transition ()
-  (setq cg-stream-state (1+ cg-stream-state))
-  (with-current-buffer "*deltas*"
-    (goto-char (point-max))
-    (insert (format "\n\n%d\n" cg-stream-state))))
-
-;; (cg-run-this
-;;  "def flatten(list_of_dicts):
-;;     flat_dict = {}
-;;     for dict_ in list_of_dicts:
-;;         flat_dict.update(dict_)
-;;     return flat_dict"
-;;  "Please improve this.")
-
-
 (require 'org-id)
-
 (defmacro cg-lexical-flet (bindings &rest body)
   "Temporarily override function definitions in BINDINGS while executing BODY."
   (declare (indent defun))
@@ -761,6 +751,9 @@ Signals an error if a form in BODY is not `defun` or `defmacro`."
                   (line-end-position))))
           (when block-end
             ;; we know block-start is non-nil
+            (delete-region block-start block-end)
+            (goto-char block-start)
+            (insert string)
             (cond ((< saved-point block-start)
                    (goto-char saved-point))
                   ((< block-end saved-point)
