@@ -166,7 +166,6 @@
 
 (defvar cg-load-wait-time-in-secs 10)
 
-;; (mapc 'cancel-timer timer-list)
 (defun cg-query (query &optional code)
   (let ((mode major-mode))
     (with-current-buffer (cg-get-base-buffer)
@@ -375,7 +374,7 @@
                                          ("description" . "Prose answer for the query. Give the answer in progressive (e.g. I am doing...) form.")))
                                        ("code" .
                                         (("type" . "string")
-                                         ("description" . "Modified code (just the code)")))))
+                                         ("description" . "Modified code (just the code). If in Lisp, prefer ;; over ;.")))))
                       ("required" . ("answer" "code")))))))
                  ("function_call" .
                   (("name" . "answer_with_code")))
@@ -466,8 +465,13 @@
   (lexical-let* ((stream-state 0)
                  (confirmed-tokens '())
                  (old-block
-                  (replace-regexp-in-string "\\`# Assistant: .*\\(\n# .+\\)*\n*" ""
-                                            (cg-block display-buffer uuid)))
+                  (replace-regexp-in-string
+                   (format
+                    "\\`%sAssistant: .*\\(\n%s.+\\)*\n*"
+                    (cg-true-comment-start display-buffer)
+                    (cg-true-comment-start display-buffer))
+                   ""
+                   (cg-block display-buffer uuid)))
                  (unconfirmed-tokens (tokenize-string old-block "gpt-4"))
                  (stream-msg "")
                  (stream-collected "")
@@ -835,23 +839,51 @@ Signals an error if a form in BODY is not `defun` or `defmacro`."
    (list (if (region-active-p)
              (buffer-substring-no-properties (region-beginning) (region-end))
            "")
-         (if (region-active-p)
-             (let ((query-type (completing-read "Type of Query: "
-                                                (cons "custom"
-                                                      (mapcar #'car chatgpt-code-query-map)))))
-               (cond ((assoc query-type chatgpt-code-query-map)
-                      (cdr (assoc query-type chatgpt-code-query-map)))
-                     ((equal query-type "custom")
-                      (read-from-minibuffer "ChatGPT Custom Prompt: "))
-                     (t query-type)))
-           "")))
+         (let ((query-type (completing-read "Type of Query: "
+                                            (cons "custom"
+                                                  (mapcar #'car chatgpt-code-query-map)))))
+           (cond ((assoc query-type chatgpt-code-query-map)
+                  (cdr (assoc query-type chatgpt-code-query-map)))
+                 ((equal query-type "custom")
+                  (read-from-minibuffer "ChatGPT Custom Prompt: "))
+                 (t query-type)))))
+  (unless (region-active-p)
+    ;; try to guess the region
+    (let* ((maybe-region-start
+            (save-excursion
+              (re-search-backward
+               (format
+                "%schatgpt \\([a-z0-9-]*\\) start\n"
+                (cg-true-comment-start (current-buffer)))
+               nil t)
+              (next-line)
+              (line-beginning-position)))
+           (uuid
+            (when maybe-region-start
+              (let ((maybe-uuid (match-string 1)))
+                (when (org-uuidgen-p maybe-uuid)
+                  maybe-uuid))))
+           (maybe-region-end
+            (when uuid
+              (save-excursion
+                (re-search-forward
+                 (format
+                  "%schatgpt %s end\n"
+                  (cg-true-comment-start (current-buffer))
+                  uuid)
+                 nil t)
+                (previous-line 2)
+                (line-end-position)))))
+      (when maybe-region-end
+        (set-mark maybe-region-start)
+        (goto-char maybe-region-end)
+        (setq code (buffer-substring-no-properties (region-beginning) (region-end))))))
   (flet ((block-comment-line
           (uuid suffix)
           (format
-           "%schatgpt %s %s%s\n"
+           "%schatgpt %s %s\n"
            (cg-true-comment-start (current-buffer))
-           uuid suffix
-           comment-end)))
+           uuid suffix)))
     (if (region-active-p)
         (let* ((block-start (cg-get-block-start))
                (block-end (cg-get-block-end))
@@ -876,6 +908,7 @@ Signals an error if a form in BODY is not `defun` or `defmacro`."
                     ;; point in block
                     (+ saved-point
                        (length (block-comment-line uuid "start")))))))
+          (deactivate-mark)
           (cg-run-this code query (current-buffer) uuid))
       (chatgpt-query))))
 
