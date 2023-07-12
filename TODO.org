@@ -8,6 +8,7 @@
 - Convert org mode to emacs so that we can have HTML collapsible headers
 - Create new demos
 - Submit to MELPA
+- vimish-fold for inspiration? maybe not
 
 * Docs
 - Add something about hooks that might cause errors

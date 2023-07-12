@@ -149,7 +149,7 @@
 (defcustom chatgpt-code-query-map
   '(("fix" . "Please fix.")
     ("example" . "Please add examples.")
-    ("doc" . "Please write the documentation for the following.")
+    ("comment" . "Please add comments")
     ("improve" . "Please improve the following.")
     ("understand" . "Annotate the code so that I can understand.")
     ;; ("suggest" . "Please make suggestions for the following.")
@@ -311,7 +311,6 @@
 (require 'dash)
 (require 's)
 
-;; improvements: set a cap so that after, say, window-size 10, we check anywhere in the remaining string for match
 (defun cg-accept-token (confirmed-tokens unconfirmed-tokens token)
   (assert (-every #'stringp confirmed-tokens))
   (assert (-every #'stringp unconfirmed-tokens))
@@ -322,6 +321,7 @@
           (continue-loop t)
           (exists-match nil))
       (while (and (<= (* 2 window-size) (length unconfirmed-tokens))
+                  (< window-size 20)
                   continue-loop)
         (if (equal (last (append confirmed-tokens (list token)) window-size)
                    (-take window-size
@@ -329,16 +329,36 @@
             (progn (setq exists-match t)
                    (setq continue-loop nil))
           (setq window-size (1+ window-size))))
-      (list
-       (append confirmed-tokens (list token))
-       (if exists-match
-           (-drop (* window-size 2) unconfirmed-tokens)
-         unconfirmed-tokens)))))
+      (let* ((new-confirmed-tokens
+              (append confirmed-tokens (list token)))
+             (new-unconfirmed-tokens
+              (if exists-match
+                  (-drop (* window-size 2) unconfirmed-tokens)
+                unconfirmed-tokens))
+             (new-confirmed-string
+              (mapconcat 'identity
+                         new-confirmed-tokens "")))
+        (list new-confirmed-tokens
+              new-unconfirmed-tokens)
+        ;; an attempt at detecting comments
+        ;; (if (and
+        ;;      (not
+        ;;       (string-match "\\`[\t ]*\\(\\n\\|\n\\)"
+        ;;                     (mapconcat 'identity
+        ;;                                new-unconfirmed-tokens "")))
+        ;;      (string-match "\\n\\([\t ]*\\)#.*\\'"
+        ;;                    new-confirmed-string))
+        ;;     (list new-confirmed-tokens
+        ;;           (cons (concat (match-string 1 new-confirmed-string) "\n")
+        ;;                 new-unconfirmed-tokens))
+        ;;   (list new-confirmed-tokens
+        ;;         new-unconfirmed-tokens))
+        ))))
 
 (defun cg-code-query-json (code query)
   (json-encode `(("model" . "gpt-4")
                  ("messages" . ((("role" . "system")
-                                 ("content" . "You are UpdatedCodeAI. The user provides a request or a query followed by the code. Please provide the answer in prose and the full updated code. Do NOT provide just the differences. Provide the updated code in full. When providing code, remove the first \"Assistant:\" line."))
+                                 ("content" . "You are UpdatedCodeAI. The user provides a request or a query followed by the code. Please provide the answer in prose and the full updated code. Do NOT provide just the differences. Provide the updated code in full. Do NOT attempt to create new files. When providing code, remove the first \"Assistant:\" line."))
                                 (("role" . "user")
                                  ("content" .
                                   ,(concat
@@ -409,7 +429,8 @@
       (let* ((block-start
               (re-search-forward
                (format
-                "^# *chatgpt %s start\n"
+                "^%schatgpt %s start\n"
+                (cg-true-comment-start display-buffer)
                 uuid)
                nil t))
              (block-end
@@ -417,7 +438,8 @@
                 (next-line)
                 (re-search-forward
                  (format
-                  "^# *chatgpt %s end"
+                  "^%schatgpt %s end"
+                  (cg-true-comment-start display-buffer)
                   uuid)
                  nil t)
                 (previous-line)
@@ -474,14 +496,12 @@
                 (setq start (match-end 0))
                 (setq stream-collected (concat stream-collected delta))
                 (cond ((= stream-state 0)
-                       ;; (with-current-buffer "*deltas*"
-                       ;;   (insert (format "\"%s\"\n" stream-collected)))
                        (when (string-match
                               (rx (and
                                    line-start "{"
-                                   (zero-or-more (or whitespace "\\n"))
+                                   (zero-or-more (or whitespace "\\\\n" "\\n"))
                                    "\\\"answer\\\":"
-                                   (zero-or-more (or whitespace "\\n"))
+                                   (zero-or-more (or whitespace "\\\\n" "\\n"))
                                    "\\\""
                                    (group (zero-or-more not-newline))))
                               stream-collected)
@@ -493,7 +513,6 @@
                                              stream-msg
                                              (cg-true-comment-start display-buffer))
                                             old-block))
-                         ;; (message "%s" (cg-sanitize stream-msg))
                          (transition)
                          (setq stream-collected "")))
                       ((= stream-state 1)
@@ -507,7 +526,6 @@
                                                  (match-string 1 stream-collected)
                                                  (cg-true-comment-start display-buffer))
                                                 old-block))
-                             ;; (message "%s" (cg-sanitize (match-string 1 stream-collected)))
                              (setq stream-collected (match-string 2 stream-collected))
                              (transition))
                          (progn
@@ -518,22 +536,18 @@
                                               (cg-commented-fill
                                                stream-msg
                                                (cg-true-comment-start display-buffer))
-                                              old-block))
-                           ;; (message "%s" (cg-sanitize stream-msg))
-                           )))
+                                              old-block)))))
                       ((= stream-state 2)
-                       ;; (with-current-buffer "*deltas*"
-                       ;;   (insert (format "\"%s\"\n" stream-collected)))
                        (when (string-match
                               (rx (and
                                    "\\\"code\\\":"
-                                   (zero-or-more (or whitespace "\\n"))
+                                   (zero-or-more (or whitespace "\\\\n" "\\n"))
                                    "\\\""
                                    ;; this exists because sometimes
                                    ;; the LLM gets confused and tries
                                    ;; to use """ for python blocks
                                    (optional "\\\"\\\"")
-                                   (zero-or-more (or whitespace "\\n"))
+                                   (zero-or-more (or whitespace "\\\\n" "\\n"))
                                    (group (zero-or-more not-newline))))
                               stream-collected)
                          (setq confirmed-tokens (list
@@ -544,10 +558,10 @@
                        (if (string-match
                             (rx
                              (and
-                              (zero-or-more (or whitespace "\\n"))
+                              (zero-or-more (or whitespace "\\\\n" "\\n"))
                               (optional "\\\"\\\"")
                               "\\\""
-                              (zero-or-more (or whitespace "\\n"))
+                              (zero-or-more (or whitespace "\\\\n" "\\n"))
                               "}"))
                             stream-collected)
                            (let ((num-trailing
@@ -577,10 +591,9 @@
                            (setq confirmed-tokens new-confirmed-tokens
                                  unconfirmed-tokens new-unconfirmed-tokens)
                            ;; trick to not display partial \
-                           (unless (equal (substring
-                                           (mapconcat 'identity confirmed-tokens "")
-                                           -1)
-                                          "\\")
+                           (unless (string-match-p
+                                    (rx (or "\\\\n" "\\n" "\\\\" "\\") eos)
+                                    (mapconcat 'identity confirmed-tokens ""))
                              (cg-replace-block
                               display-buffer
                               uuid
@@ -589,8 +602,9 @@
                                 stream-msg
                                 (cg-true-comment-start display-buffer))
                                (cg-sanitize
-                                (concat (mapconcat 'identity confirmed-tokens "")
-                                        (mapconcat 'identity unconfirmed-tokens ""))))))))))))))))))
+                                (concat
+                                 (mapconcat 'identity confirmed-tokens "")
+                                 (mapconcat 'identity unconfirmed-tokens ""))))))))))))))))))
 
 (defun cg-run-this (code query display-buffer uuid)
   (let ((process (start-process "curl-process" "*curl-output*" "/bin/bash" "-c"
@@ -658,7 +672,8 @@ Signals an error if a form in BODY is not `defun` or `defmacro`."
     (when (region-active-p)
       (cond
        ;; check this line
-       ((string-match "^# *chatgpt \\([a-z0-9-]*\\) start"
+       ((string-match (format "^%schatgpt \\([a-z0-9-]*\\) start"
+                              (cg-true-comment-start (current-buffer)))
                       (line-at-pos (region-beginning)))
         (unless (on-last-line (region-beginning))
           (line-beginning-position-at-pos
@@ -672,7 +687,8 @@ Signals an error if a form in BODY is not `defun` or `defmacro`."
          (save-excursion
            (goto-char (region-beginning))
            (previous-line)
-           (string-match "\\`# *chatgpt \\([a-z0-9-]*\\) start"
+           (string-match (format "\\`%schatgpt \\([a-z0-9-]*\\) start"
+                                 (cg-true-comment-start (current-buffer)))
                          (line-at-pos (point)))))
         (line-beginning-position-at-pos (region-beginning)))
        (t
@@ -690,7 +706,8 @@ Signals an error if a form in BODY is not `defun` or `defmacro`."
     (when (region-active-p)
       (cond
        ;; check this line
-       ((string-match "^# *chatgpt \\([a-z0-9-]*\\) end"
+       ((string-match (format "^%schatgpt \\([a-z0-9-]*\\) end"
+                              (cg-true-comment-start (current-buffer)))
                       (line-at-pos (region-end)))
         (unless (on-first-line (region-end))
           (line-end-position-at-pos
@@ -704,7 +721,8 @@ Signals an error if a form in BODY is not `defun` or `defmacro`."
          (save-excursion
            (goto-char (region-end))
            (next-line)
-           (string-match "^# *chatgpt \\([a-z0-9-]*\\) end"
+           (string-match (format "^%schatgpt \\([a-z0-9-]*\\) end"
+                                 (cg-true-comment-start (current-buffer)))
                          (line-at-pos (point)))))
         (line-end-position-at-pos (region-end)))
        ((and
@@ -713,7 +731,8 @@ Signals an error if a form in BODY is not `defun` or `defmacro`."
          (save-excursion
            (goto-char (region-end))
            (previous-line)
-           (string-match "^# *chatgpt \\([a-z0-9-]*\\) end"
+           (string-match (format "^%schatgpt \\([a-z0-9-]*\\) end"
+                                 (cg-true-comment-start (current-buffer)))
                          (line-at-pos (point)))))
         (line-end-position-at-pos
          (save-excursion
@@ -725,15 +744,7 @@ Signals an error if a form in BODY is not `defun` or `defmacro`."
            (if (string= (line-at-pos (region-end))
                         "\n")
                1
-             0))
-        ;; (let ((region (buffer-substring
-        ;;                (region-beginning)
-        ;;                (region-end))))
-        ;;   (if (string-match "\\([ \t\n]+\\)\\'" region)
-        ;;       (- (region-end)
-        ;;          (length (match-string 1 region)))
-        ;;     (line-end-position-at-pos (region-end))))
-        ))))
+             0))))))
 
   (defun cg-get-block-uuid (block-start block-end)
     (when (and block-start block-end)
@@ -744,7 +755,9 @@ Signals an error if a form in BODY is not `defun` or `defmacro`."
                                   (thing-at-point 'line))))
           end-comment-line
           (when (string-match
-                 "^# *chatgpt \\([a-z0-9-]*\\) end"
+                 (format
+                  "^%schatgpt \\([a-z0-9-]*\\) end"
+                  (cg-true-comment-start (current-buffer)))
                  end-comment-line)
             (let ((maybe-uuid
                    (match-string 1 end-comment-line)))
@@ -757,7 +770,8 @@ Signals an error if a form in BODY is not `defun` or `defmacro`."
                       (match-string 1 end-comment-line)
                       (when (string-match
                              (format
-                              "^# *chatgpt %s start"
+                              "^%schatgpt %s start"
+                              (cg-true-comment-start (current-buffer))
                               uuid)
                              (thing-at-point 'line))
                         (set-text-properties 0 (length uuid) nil uuid)
@@ -770,7 +784,8 @@ Signals an error if a form in BODY is not `defun` or `defmacro`."
         (let* ((block-start
                 (re-search-forward
                  (format
-                  "^# *chatgpt %s start\n"
+                  "^%schatgpt %s start\n"
+                  (cg-true-comment-start buffer)
                   uuid)
                  nil t))
                (block-end
@@ -781,7 +796,8 @@ Signals an error if a form in BODY is not `defun` or `defmacro`."
                   (next-line)
                   (re-search-forward
                    (format
-                    "^# *chatgpt %s end"
+                    "^%schatgpt %s end"
+                    (cg-true-comment-start buffer)
                     uuid)
                    nil t)
                   (previous-line)
@@ -810,7 +826,7 @@ Signals an error if a form in BODY is not `defun` or `defmacro`."
                               clojure-mode
                               scheme-mode
                               hy-mode))
-           ";;")
+           ";; ")
           (t comment-start))))
 
 ;; need to properly escape things, look for the general solution
