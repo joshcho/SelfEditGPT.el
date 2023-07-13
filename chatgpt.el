@@ -491,6 +491,7 @@
                  (unconfirmed-tokens (tokenize-string old-block "gpt-4"))
                  (stream-msg "")
                  (stream-collected "")
+                 (inter-string "")
                  (display-buffer display-buffer)
                  (uuid uuid))
     (lambda (process output)
@@ -609,6 +610,16 @@
                              (cg-accept-token confirmed-tokens
                                               unconfirmed-tokens
                                               delta)
+                           ;; (when (string-match
+                           ;;        (rx
+                           ;;         (and
+                           ;;          (group
+                           ;;           (or "\\\\n" "\\n")
+                           ;;           (zero-or-more whitespace))
+                           ;;          (zero-or-more not-newline)
+                           ;;          eos))
+                           ;;        stream-collected)
+                           ;;   (match-string 1 stream-collected))
                            (setq confirmed-tokens new-confirmed-tokens
                                  unconfirmed-tokens new-unconfirmed-tokens)
                            ;; trick to not display partial \
@@ -623,17 +634,24 @@
                                             (cg-true-comment-start display-buffer)))
                                      (str2
                                       (if chatgpt-use-moving-cursor
-                                          (concat
-                                           (cg-sanitize
-                                            (mapconcat 'identity confirmed-tokens ""))
-                                           (cg-change-first-char-face
-                                            (cg-sanitize
-                                             (mapconcat 'identity unconfirmed-tokens ""))
-                                            'gray-background))
+                                          (let ((unconfirmed-string
+                                                 (cg-change-first-char-face
+                                                  (cg-sanitize
+                                                   (apply #'concat unconfirmed-tokens))
+                                                  'gray-background)))
+                                            (if (equal unconfirmed-string "")
+                                                (cg-sanitize
+                                                 (apply #'concat confirmed-tokens))
+                                              (concat
+                                               (cg-sanitize
+                                                (apply #'concat confirmed-tokens))
+                                               (substring unconfirmed-string 0 1)
+                                               inter-string
+                                               (substring unconfirmed-string 1))))
                                         (cg-sanitize
-                                         (concat
-                                          (mapconcat 'identity confirmed-tokens "")
-                                          (mapconcat 'identity unconfirmed-tokens ""))))))
+                                         (apply #'concat
+                                                (append confirmed-tokens
+                                                        unconfirmed-tokens))))))
                                 (concat str1 str2))))))))))))))))
 
 (defun cg-change-first-char-face (text face)
