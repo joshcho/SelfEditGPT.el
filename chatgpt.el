@@ -899,9 +899,11 @@ Signals an error if a form in BODY is not `defun` or `defmacro`."
                         scheme-mode
                         hy-mode
                         lisp-interaction-mode)))
-      (if (memq major-mode lisp-modes)
-          ";; "
-        comment-start))))
+      (cond ((memq major-mode lisp-modes)
+             ";; ")
+            (comment-start comment-start)
+            (t "# ")))))
+
 
 (defun cg-guess-and-set-region ()
   (let* ((maybe-region-start
