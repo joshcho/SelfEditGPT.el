@@ -411,9 +411,9 @@
                      json-data-string)))
                   "\" "
                   url)))
-    (with-current-buffer "*outputs-1*"
-      (insert curl-command)
-      (insert "\n"))
+    ;; (with-current-buffer "*outputs-1*"
+    ;;   (insert curl-command)
+    ;;   (insert "\n"))
     curl-command))
 
 (defun cg-sanitize (string)
@@ -445,14 +445,14 @@
                nil t))
              (block-end
               (when block-start
-                (next-line)
+                (forward-line)
                 (re-search-forward
                  (format
                   "^%schatgpt %s end"
                   (cg-true-comment-start display-buffer)
                   uuid)
                  nil t)
-                (previous-line)
+                (forward-line -1)
                 (line-end-position))))
         ;; we know block-start is non-nil
         (when block-end
@@ -588,8 +588,9 @@
                                   (length
                                    (match-string 0 stream-collected)))
                                  (final-string
-                                  (concat (apply #'s-concat confirmed-tokens)
-                                          delta)))
+                                  (concat
+                                   (mapconcat #'identity confirmed-tokens)
+                                   delta)))
                              (transition)
                              (cg-replace-block display-buffer
                                                uuid
@@ -732,14 +733,14 @@ Signals an error if a form in BODY is not `defun` or `defmacro`."
           (line-beginning-position-at-pos
            (save-excursion
              (goto-char (region-beginning))
-             (next-line)
+             (forward-line)
              (point)))))
        ;; check the next line
        ((and
          (not (on-first-line (region-beginning)))
          (save-excursion
            (goto-char (region-beginning))
-           (previous-line)
+           (forward-line -1)
            (string-match (format "\\`%schatgpt \\([a-z0-9-]*\\) start"
                                  (cg-true-comment-start (current-buffer)))
                          (line-at-pos (point)))))
@@ -766,14 +767,14 @@ Signals an error if a form in BODY is not `defun` or `defmacro`."
           (line-end-position-at-pos
            (save-excursion
              (goto-char (region-end))
-             (previous-line)
+             (forward-line -1)
              (point)))))
        ;; check the next line
        ((and
          (not (on-last-line (region-end)))
          (save-excursion
            (goto-char (region-end))
-           (next-line)
+           (forward-line)
            (string-match (format "^%schatgpt \\([a-z0-9-]*\\) end"
                                  (cg-true-comment-start (current-buffer)))
                          (line-at-pos (point)))))
@@ -783,14 +784,14 @@ Signals an error if a form in BODY is not `defun` or `defmacro`."
          (string= (line-at-pos (region-end)) "\n")
          (save-excursion
            (goto-char (region-end))
-           (previous-line)
+           (forward-line -1)
            (string-match (format "^%schatgpt \\([a-z0-9-]*\\) end"
                                  (cg-true-comment-start (current-buffer)))
                          (line-at-pos (point)))))
         (line-end-position-at-pos
          (save-excursion
            (goto-char (region-end))
-           (previous-line 2)
+           (forward-line -2)
            (point))))
        (t
         (- (line-end-position-at-pos (region-end))
@@ -804,7 +805,7 @@ Signals an error if a form in BODY is not `defun` or `defmacro`."
       (unless (on-last-line block-end)
         (let ((end-comment-line (save-excursion
                                   (goto-char block-end)
-                                  (next-line)
+                                  (forward-line)
                                   (thing-at-point 'line))))
           end-comment-line
           (when (string-match
@@ -819,7 +820,7 @@ Signals an error if a form in BODY is not `defun` or `defmacro`."
                   (unless (on-first-line block-start)
                     (save-excursion
                       (goto-char block-start)
-                      (previous-line)
+                      (forward-line -1)
                       (match-string 1 end-comment-line)
                       (when (string-match
                              (format
@@ -844,16 +845,16 @@ Signals an error if a form in BODY is not `defun` or `defmacro`."
                (block-end
                 ;; nil if block-end is nil
                 (when block-start
-                  ;; this (next-line) is critical for making sure that
+                  ;; this (forward-line) is critical for making sure that
                   ;; the block is at least 1 line high
-                  (next-line)
+                  (forward-line)
                   (re-search-forward
                    (format
                     "^%schatgpt %s end"
                     (cg-true-comment-start buffer)
                     uuid)
                    nil t)
-                  (previous-line)
+                  (forward-line -1)
                   (line-end-position))))
           (when block-end
             ;; we know block-start is non-nil
@@ -874,92 +875,104 @@ Signals an error if a form in BODY is not `defun` or `defmacro`."
 
 (defun cg-true-comment-start (buffer)
   (with-current-buffer buffer
-    (cond ((memq major-mode '(emacs-lisp-mode
-                              lisp-mode
-                              clojure-mode
-                              scheme-mode
-                              hy-mode))
-           ";; ")
-          (t comment-start))))
+    (let ((lisp-modes '(emacs-lisp-mode
+                        lisp-mode
+                        clojure-mode
+                        scheme-mode
+                        hy-mode
+                        lisp-interaction-mode)))
+      (if (memq major-mode lisp-modes)
+          ";; "
+        comment-start))))
 
-;; need to properly escape things, look for the general solution
+(defun cg-guess-and-set-region ()
+  (let* ((maybe-region-start
+          (save-excursion
+            (re-search-backward
+             (format
+              "%schatgpt \\([a-z0-9-]*\\) start\n"
+              (cg-true-comment-start (current-buffer)))
+             nil t)
+            (forward-line)
+            (line-beginning-position)))
+         (uuid
+          (when maybe-region-start
+            (let ((maybe-uuid (match-string 1)))
+              (when (org-uuidgen-p maybe-uuid)
+                maybe-uuid))))
+         (block-comment-end-line
+          (format "%schatgpt %s end\n"
+                  (cg-true-comment-start (current-buffer)) uuid))
+         (maybe-region-end
+          (when uuid
+            (save-excursion
+              (re-search-forward
+               block-comment-end-line
+               nil t)
+              (forward-line -2)
+              (line-end-position)))))
+    (when maybe-region-end
+      (set-mark maybe-region-start)
+      (goto-char maybe-region-end)
+      (setq code (buffer-substring-no-properties (region-beginning) (region-end))))))
+
+(defun cg-get-region-content ()
+  (if (region-active-p)
+      (buffer-substring-no-properties (region-beginning) (region-end))
+    ""))
+
+(defun cg-get-query-from-user ()
+  (let ((query-type (completing-read "Type of Query: "
+                                     (cons "custom"
+                                           (mapcar #'car chatgpt-code-query-map)))))
+    (cond ((assoc query-type chatgpt-code-query-map)
+           (cdr (assoc query-type chatgpt-code-query-map)))
+          ((equal query-type "custom")
+           (read-from-minibuffer "ChatGPT Custom Prompt: "))
+          (t query-type))))
+
+(defun cg-insert-comment-blocks (block-start block-end uuid)
+  (let* ((saved-point (point))
+         (block-comment-start-line
+          (format "%schatgpt %s start\n"
+                  (cg-true-comment-start (current-buffer)) uuid))
+         (block-comment-end-line
+          (format "%schatgpt %s end\n"
+                  (cg-true-comment-start (current-buffer)) uuid)))
+    (goto-char block-end)
+    (newline)
+    (insert block-comment-end-line)
+    (goto-char block-start)
+    (insert block-comment-start-line)
+    (goto-char
+     (cond ((< saved-point block-start)
+            saved-point)
+           ((< block-end saved-point)
+            (+ saved-point
+               (length block-comment-end-line)
+               (length block-comment-start-line)))
+           (t
+            ;; point in block
+            (+ saved-point
+               (length block-comment-start-line)))))))
+
 (defun chatgpt-self-edit (code query)
   (interactive
-   (list (if (region-active-p)
-             (buffer-substring-no-properties (region-beginning) (region-end))
-           "")
-         (let ((query-type (completing-read "Type of Query: "
-                                            (cons "custom"
-                                                  (mapcar #'car chatgpt-code-query-map)))))
-           (cond ((assoc query-type chatgpt-code-query-map)
-                  (cdr (assoc query-type chatgpt-code-query-map)))
-                 ((equal query-type "custom")
-                  (read-from-minibuffer "ChatGPT Custom Prompt: "))
-                 (t query-type)))))
+   (list (cg-get-region-content)
+         (cg-get-query-from-user)))
   (unless (region-active-p)
-    ;; try to guess the region
-    (let* ((maybe-region-start
-            (save-excursion
-              (re-search-backward
-               (format
-                "%schatgpt \\([a-z0-9-]*\\) start\n"
-                (cg-true-comment-start (current-buffer)))
-               nil t)
-              (next-line)
-              (line-beginning-position)))
-           (uuid
-            (when maybe-region-start
-              (let ((maybe-uuid (match-string 1)))
-                (when (org-uuidgen-p maybe-uuid)
-                  maybe-uuid))))
-           (maybe-region-end
-            (when uuid
-              (save-excursion
-                (re-search-forward
-                 (format
-                  "%schatgpt %s end\n"
-                  (cg-true-comment-start (current-buffer))
-                  uuid)
-                 nil t)
-                (previous-line 2)
-                (line-end-position)))))
-      (when maybe-region-end
-        (set-mark maybe-region-start)
-        (goto-char maybe-region-end)
-        (setq code (buffer-substring-no-properties (region-beginning) (region-end))))))
-  (flet ((block-comment-line
-          (uuid suffix)
-          (format
-           "%schatgpt %s %s\n"
-           (cg-true-comment-start (current-buffer))
-           uuid suffix)))
-    (if (region-active-p)
-        (let* ((block-start (cg-get-block-start))
-               (block-end (cg-get-block-end))
-               (saved-point (point))
-               (existing-uuid (cg-get-block-uuid block-start block-end))
-               (uuid (or existing-uuid (org-id-new))))
-          ;; insert lines if this block doesn't have block comments
-          (unless existing-uuid
-            (goto-char block-end)
-            (newline)
-            (insert (block-comment-line uuid "end"))
-            (goto-char block-start)
-            (insert (block-comment-line uuid "start"))
-            (goto-char
-             (cond ((< saved-point block-start)
-                    saved-point)
-                   ((< block-end saved-point)
-                    (+ saved-point
-                       (length (block-comment-line uuid "start"))
-                       (length (block-comment-line uuid "end"))))
-                   (t
-                    ;; point in block
-                    (+ saved-point
-                       (length (block-comment-line uuid "start")))))))
-          (deactivate-mark)
-          (cg-run-this code query (current-buffer) uuid))
-      (chatgpt-query))))
+    (cg-guess-and-set-region)
+    (setq code (cg-get-region-content)))
+  (if (region-active-p)
+      (let* ((block-start (cg-get-block-start))
+             (block-end (cg-get-block-end))
+             (existing-uuid (cg-get-block-uuid block-start block-end))
+             (uuid (or existing-uuid (org-id-new))))
+        (unless existing-uuid
+          (cg-insert-comment-blocks block-start block-end uuid))
+        (deactivate-mark)
+        (cg-run-this code query (current-buffer) uuid))
+    (chatgpt-query)))
 
 ;; (get-buffer-create "*test*")
 
