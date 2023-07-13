@@ -329,14 +329,57 @@
                    (setq continue-loop nil))
           (setq window-size (1+ window-size))))
       (let* ((new-confirmed-tokens
-              (append confirmed-tokens (list token)))
+              (append confirmed-tokens
+                      (list
+                       (if (or exists-match
+                               (string-match-p
+                                (rx
+                                 bos
+                                 (zero-or-more
+                                  (or
+                                   whitespace
+                                   "\n"))
+                                 eos)
+                                token)
+                               (string-match-p
+                                (rx
+                                 ":\\\\"
+                                 eos)
+                                token)
+                               (string-match-p
+                                (rx
+                                 (not "\\")
+                                 "\\\""
+                                 (optional "\\n")
+                                 eos)
+                                token))
+                           token
+                         (progn
+                           (string-match
+                            (rx
+                             bos
+                             (group
+                              (zero-or-more whitespace))
+                             (zero-or-more
+                              (not whitespace))
+                             (group
+                              (zero-or-more whitespace))
+                             eos)
+                            token)
+                           (concat
+                            (cg-change-text-face
+                             token 'green-background
+                             0
+                             (length token)
+                             ;; (length (match-string 1 token))
+                             ;; (-
+                             ;;  (length token)
+                             ;;  (length (match-string 2 token)))
+                             )))))))
              (new-unconfirmed-tokens
               (if exists-match
                   (-drop (* window-size 2) unconfirmed-tokens)
-                unconfirmed-tokens))
-             (new-confirmed-string
-              (mapconcat 'identity
-                         new-confirmed-tokens "")))
+                unconfirmed-tokens)))
         (list new-confirmed-tokens
               new-unconfirmed-tokens)
         ;; an attempt at detecting comments
@@ -610,21 +653,45 @@
                              (cg-accept-token confirmed-tokens
                                               unconfirmed-tokens
                                               delta)
-                           ;; (when (string-match
-                           ;;        (rx
-                           ;;         (and
-                           ;;          (group
-                           ;;           (or "\\\\n" "\\n")
-                           ;;           (zero-or-more whitespace))
-                           ;;          (zero-or-more not-newline)
-                           ;;          eos))
-                           ;;        stream-collected)
-                           ;;   (match-string 1 stream-collected))
+                           (with-current-buffer (get-buffer-create "*outputs-2*")
+                             (goto-char (point-max))
+                             (insert (format "%s, %s\n"
+                                             stream-collected
+                                             delta)))
+                           (let ((sanitized-stream
+                                  (cg-sanitize stream-collected)))
+                             (if (string-match
+                                  (rx
+                                   (and
+                                    line-start
+                                    (group
+                                     (zero-or-more whitespace))
+                                    "#"
+                                    (zero-or-more not-newline)
+                                    eos))
+                                  sanitized-stream)
+                                 (progn
+                                   (setq inter-string
+                                         (concat
+                                          "\n"
+                                          (match-string 1 sanitized-stream)))
+                                   (with-current-buffer (get-buffer-create "*outputs-2*")
+                                     (goto-char (point-max))
+                                     (insert "HHOTNIHTN")
+                                     (insert (format "%s, %s\n"
+                                                     delta
+                                                     inter-string))))
+                               (setq inter-string "")))
                            (setq confirmed-tokens new-confirmed-tokens
                                  unconfirmed-tokens new-unconfirmed-tokens)
                            ;; trick to not display partial \
                            (unless (string-match-p
-                                    (rx (or "\\\\n" "\\n" "\\\\" "\\") eos)
+                                    (rx
+                                     (zero-or-more whitespace)
+                                     "#"
+                                     (zero-or-more not-newline)
+                                     (or "\\\\n" "\\n" "\\\\" "\\")
+                                     eos)
                                     (mapconcat 'identity confirmed-tokens ""))
                              (cg-replace-block
                               display-buffer
@@ -635,26 +702,29 @@
                                      (str2
                                       (if chatgpt-use-moving-cursor
                                           (let ((unconfirmed-string
-                                                 (cg-change-first-char-face
+                                                 (cg-change-text-face
                                                   (cg-sanitize
                                                    (apply #'concat unconfirmed-tokens))
-                                                  'gray-background)))
+                                                  'gray-background
+                                                  0 1)))
                                             (if (equal unconfirmed-string "")
                                                 (cg-sanitize
                                                  (apply #'concat confirmed-tokens))
                                               (concat
                                                (cg-sanitize
                                                 (apply #'concat confirmed-tokens))
-                                               (substring unconfirmed-string 0 1)
-                                               inter-string
-                                               (substring unconfirmed-string 1))))
+                                               (when unconfirmed-string
+                                                 (substring unconfirmed-string 0 1))
+                                               ;; inter-string
+                                               (when unconfirmed-string
+                                                 (substring unconfirmed-string 1)))))
                                         (cg-sanitize
                                          (apply #'concat
                                                 (append confirmed-tokens
                                                         unconfirmed-tokens))))))
                                 (concat str1 str2))))))))))))))))
 
-(defun cg-change-first-char-face (text face)
+(defun cg-change-text-face (text face start end)
   (cl-flet ((fontify-using-faces
               (text)
               (let ((pos 0)
@@ -671,12 +741,31 @@
          (insert text)
          (font-lock-ensure)
          (let ((buffer-string (buffer-string)))
-           (put-text-property 0 1 'font-lock-face face buffer-string)
+           (put-text-property start end 'font-lock-face face buffer-string)
            buffer-string))))))
 
 (defface gray-background
   '((t :background "gray"))
   "Face with a gray background.")
+(defface green-background
+  ;; '((t :background "lime green"
+  ;;      :foreground "gray95"))
+  ;; '((t :background "lime green"
+  ;;      :foreground "black"))
+  ;; '((t
+  ;;    ;; :background "MediumPurple"
+  ;;    :background "purple4"
+  ;;    ;; :foreground "black"
+  ;;    :foreground "white"
+  ;;    ;; :underline t
+  ;;    ))
+  ;; '((t :background "MediumPurple"
+  ;;      :foreground "white"))
+  '((t :background "SeaGreen4"
+       :foreground "white"))
+  ;; '((t :background "yellow"
+  ;;      :foreground "black"))
+  "Face with a green background.")
 
 (defun cg-run-this (code query display-buffer uuid)
   (let ((process (start-process "curl-process" "*curl-output*" "/bin/bash" "-c"
