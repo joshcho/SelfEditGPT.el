@@ -310,6 +310,25 @@
 (require 'dash)
 (require 's)
 
+(defun cg-try-greenify-token (token)
+  (if (or
+       (string-match-p
+        (rx bos (zero-or-more (or whitespace "\n")) eos)
+        token)
+       (string-match-p
+        (rx ":\\\\" eos)
+        token)
+       (string-match-p
+        (rx (not "\\") "\\\"" (optional "\\n") eos)
+        token)
+       (string-match-p
+        (rx "\\\\" eos)
+        token))
+      token
+    (cg-change-text-face
+     token 'green-background
+     0 (length token))))
+
 (defun cg-accept-token (confirmed-tokens unconfirmed-tokens token)
   (assert (-every #'stringp confirmed-tokens))
   (assert (-every #'stringp unconfirmed-tokens))
@@ -318,9 +337,9 @@
       (list (append confirmed-tokens (list token)) (cdr unconfirmed-tokens))
     (let ((window-size 1)
           (continue-loop t)
-          (exists-match nil))
+          (exists-match nil)
+          (offset 0))
       (while (and (<= (* 2 window-size) (length unconfirmed-tokens))
-                  (< window-size 20)
                   continue-loop)
         (if (equal (last (append confirmed-tokens (list token)) window-size)
                    (-take window-size
@@ -328,57 +347,30 @@
             (progn (setq exists-match t)
                    (setq continue-loop nil))
           (setq window-size (1+ window-size))))
+      (unless exists-match
+        (setq window-size 10
+              continue-loop t)
+        (while (and (<= (+ (* 2 window-size) offset)
+                        (length unconfirmed-tokens))
+                    continue-loop)
+          (if (equal (last (append confirmed-tokens (list token)) window-size)
+                     (-take window-size
+                            (-drop (+ window-size offset)
+                                   unconfirmed-tokens)))
+              (progn (setq exists-match t)
+                     (setq continue-loop nil))
+            (setq offset (1+ offset)))))
       (let* ((new-confirmed-tokens
               (append confirmed-tokens
                       (list
-                       (if (or exists-match
-                               (string-match-p
-                                (rx
-                                 bos
-                                 (zero-or-more
-                                  (or
-                                   whitespace
-                                   "\n"))
-                                 eos)
-                                token)
-                               (string-match-p
-                                (rx
-                                 ":\\\\"
-                                 eos)
-                                token)
-                               (string-match-p
-                                (rx
-                                 (not "\\")
-                                 "\\\""
-                                 (optional "\\n")
-                                 eos)
-                                token))
+                       (if exists-match
                            token
-                         (progn
-                           (string-match
-                            (rx
-                             bos
-                             (group
-                              (zero-or-more whitespace))
-                             (zero-or-more
-                              (not whitespace))
-                             (group
-                              (zero-or-more whitespace))
-                             eos)
-                            token)
-                           (concat
-                            (cg-change-text-face
-                             token 'green-background
-                             0
-                             (length token)
-                             ;; (length (match-string 1 token))
-                             ;; (-
-                             ;;  (length token)
-                             ;;  (length (match-string 2 token)))
-                             )))))))
+                         (cg-try-greenify-token token)))))
              (new-unconfirmed-tokens
               (if exists-match
-                  (-drop (* window-size 2) unconfirmed-tokens)
+                  (-drop (+ (* window-size 2)
+                            offset)
+                         unconfirmed-tokens)
                 unconfirmed-tokens)))
         (list new-confirmed-tokens
               new-unconfirmed-tokens)
@@ -687,9 +679,9 @@
                            ;; trick to not display partial \
                            (unless (string-match-p
                                     (rx
-                                     (zero-or-more whitespace)
-                                     "#"
-                                     (zero-or-more not-newline)
+                                     ;; (zero-or-more whitespace)
+                                     ;; "#"
+                                     ;; (zero-or-more not-newline)
                                      (or "\\\\n" "\\n" "\\\\" "\\")
                                      eos)
                                     (mapconcat 'identity confirmed-tokens ""))

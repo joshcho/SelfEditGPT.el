@@ -17,3 +17,8 @@
 - [[https://github.com/nobiot/org-transclusion][Org Transclusion]]?
 - Easy chat selection
 - Forked chatgpt-wrapper for customizable prompts
+
+* Diff Calculation
+- at the end
+- at lines
+- git diff
