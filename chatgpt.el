@@ -399,7 +399,7 @@
                  ("messages" . ((("role" . "system")
                                  ("content" .
                                   ,(if (eq chatgpt-mode 'writing)
-                                       "You are UpdatedWritingAI. The user provides a request or a query followed by the wirting. Please provide the answer in prose and the full updated writing. Do NOT provide just the differences. Maintain the structure of the original writing; don't revamp everything unless explicitly asked. Provide the updated writing in full. When providing the writing, remove the first \"Assistant:\" line."
+                                       "You are BetterEmailAI. The user provides a request or a query followed by a snippet of an email. Please provide the answer in prose and the full updated email snippet. Do NOT provide just the differences. Maintain the structure and tone of the original email snippet; don't revamp everything unless explicitly asked. Refrain from changing the writing's style. Provide the updated email snippet in full. When providing the email snippet, remove the first \"Assistant:\" line."
                                      "You are UpdatedCodeAI. The user provides a request or a query followed by the code. Please provide the answer in prose and the full updated code. Do NOT provide just the differences. Provide the updated code in full. Do NOT attempt to create new files. When providing code, remove the first \"Assistant:\" line.")))
                                 (("role" . "user")
                                  ("content" .
@@ -419,7 +419,7 @@
                                         (("type" . "string")
                                          ("description" .
                                           ,(if (eq chatgpt-mode 'writing)
-                                               "Modified writing"
+                                               "Modified email snippet"
                                              "Modified code (just the code). If in Lisp, prefer ;; over ;."))))))
                       ("required" . ("answer" "code")))))))
                  ("function_call" .
@@ -715,6 +715,11 @@
                                                 (append confirmed-tokens
                                                         unconfirmed-tokens))))))
                                 (concat str1 str2))))))))))))))))
+
+(defun cg-reset-face-region (start end)
+  "Reset the face of the region between START and END to the default."
+  (interactive "r")
+  (put-text-property start end 'face 'default))
 
 (defun cg-change-text-face (text face start end)
   (cl-flet ((fontify-using-faces
