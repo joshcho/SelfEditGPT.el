@@ -299,13 +299,15 @@
 (add-hook 'chatgpt-mode-hook #'poly-chatgpt-mode)
 
 (require 'cl)
-(lexical-let ((dir default-directory))
-  (defun tokenize-string (text model)
-    (with-temp-buffer
-      (call-process "python" nil t nil (format "%s%s" dir "tokenizer.py")
-                    text model)
-      (goto-char (point-min))
-      (read (current-buffer)))))
+(defconst cg-dir (file-name-directory load-file-name))
+(defun tokenize-string (text model)
+  (with-temp-buffer
+    (call-process "python" nil t nil
+                  default-directory
+                  (format "%s%s" cg-dir "tokenizer.py")
+                  text model)
+    (goto-char (point-min))
+    (read (current-buffer))))
 
 (require 'dash)
 (require 's)
@@ -330,8 +332,8 @@
      0 (length token))))
 
 (defun cg-accept-token (confirmed-tokens unconfirmed-tokens token)
-  (assert (-every #'stringp confirmed-tokens))
-  (assert (-every #'stringp unconfirmed-tokens))
+  (cl-assert (-every #'stringp confirmed-tokens))
+  (cl-assert (-every #'stringp unconfirmed-tokens))
   (if (and (>= (length unconfirmed-tokens) 1)
            (string= (car unconfirmed-tokens) token))
       (list (append confirmed-tokens (list token)) (cdr unconfirmed-tokens))
@@ -389,7 +391,7 @@
         ;;         new-unconfirmed-tokens))
         ))))
 
-(defcustom chatgpt-mode 'code
+(defcustom chatgpt-mode 'writing
   "My custom variable."
   :type '(choice (const :tag "Writing" 'writing)
                  (const :tag "Code" 'code)))
@@ -669,7 +671,6 @@
                                           (match-string 1 sanitized-stream)))
                                    (with-current-buffer (get-buffer-create "*outputs-2*")
                                      (goto-char (point-max))
-                                     (insert "HHOTNIHTN")
                                      (insert (format "%s, %s\n"
                                                      delta
                                                      inter-string))))
