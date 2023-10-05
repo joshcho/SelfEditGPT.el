@@ -1,5 +1,7 @@
 #+TITLE: ChatGPT.el
 
+IGNORE THE README. It's for ChatGPT.el. If you want diffs, try "C-c ." over a region of text.
+
 [[https://chat.openai.com/chat][ChatGPT]] in Emacs.
 
 - [[https://www.youtube.com/watch?v=4oUrm4CnIjo][Basic Demo]]
